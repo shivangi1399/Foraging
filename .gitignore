@@ -25,5 +25,6 @@ Train_Rec_Info/
 
 # Excluded code subfolders
 code/conferences/
+code/Preliminary analysis/
 code/*/prep_code/
 code/*/others_code/
