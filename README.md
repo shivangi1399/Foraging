@@ -14,6 +14,11 @@ On each trial, two morphed visual stimuli are presented and the subject must sel
 - **artifact_rejection.m** — Visual artifact rejection on FieldTrip-formatted LFP, converts cleaned data back to Syncopy format.
 - **load_cleaned_data.py** — Loads artifact-rejected LFP data back into Python via Syncopy.
 
+### Parameter analysis (`code/Parameter analysis/`)
+- **trial_parameter_analysis.py** — Timelock analyses split by reward level and difficulty, plotted per array and channel.
+- **spectra_sign.py** / **spectra_timelock.py** — Spectral and timelock significance analyses.
+- **across_block_behavior.py** / **trial_history_analysis.py** — Behavioral analyses across blocks and trial history effects.
+  
 ### Cognitive state analysis
 
 Cognitive states are inferred from behavioral emissions (e.g., reaction times) using a hidden Markov model (external to this repo). The predicted state assignments are used to group trials for all downstream analyses.
@@ -31,11 +36,6 @@ Cognitive states are inferred from behavioral emissions (e.g., reaction times) u
 #### LFP — state probability (`code/States_analysis/lfp/state_prob/`)
 - **erp_spec_state_prob.ipynb** — ERP and spectral analysis using continuous state probabilities.
 - **erp_spectra_stats.py** — Statistical comparisons using state probability weighting.
-
-### Parameter analysis (`code/Parameter analysis/`)
-- **trial_parameter_analysis.py** — Timelock analyses split by reward level and difficulty, plotted per array and channel.
-- **spectra_sign.py** / **spectra_timelock.py** — Spectral and timelock significance analyses.
-- **across_block_behavior.py** / **trial_history_analysis.py** — Behavioral analyses across blocks and trial history effects.
 
 ### RF-to-stimulus mapping (`code/RF_VR_mapping/RFarea_stim_collapse_time/`)
 
