@@ -1,0 +1,4 @@
+from .sua_from_sorting import process_curated_sorting
+
+def sua_from_sorting(*args, **kwargs):
+    return process_curated_sorting(*args, **kwargs)

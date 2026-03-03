@@ -1,0 +1,29 @@
+# Data files
+*.mat
+*.npy
+*.pkl
+*.h5
+*.hdf5
+*.dat
+*.bin
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+
+# Large folders (data, results, plots)
+Datasets/
+Results/
+plots/
+Train_Rec_Info/
+
+# Excluded code subfolders
+code/conferences/
+code/*/prep_code/
+code/*/others_code/

@@ -1,0 +1,52 @@
+
+import  syncopy as spy
+
+from preprocessing.preprocessing_utilities import create_target_folder, get_session_info, create_standard_container
+
+import spikeinterface as si
+import spikeinterface.extractors as se
+
+def prepare_sorting_for_conversion(sorting_folder):
+
+
+def check_if_multirecording(sorting_folder):
+    
+
+def create_sua_from_waveforms(sorting, waveform, cs_folder):
+
+    if 'sd' in locals():
+
+        sd.clear()
+
+        sd._close()
+    
+    units = sorting.get_unit_ids()
+    all_spikes = sorting.get_all_spike_trains()[0]
+
+
+    # find channel per unit
+    templates = waveform.get_all_templates(mode='median')
+    all_max_chan = np.full(units.max()+1, -1)
+    all_max_chan[units] = templates.max(axis=1).argmax(axis=1)
+
+    print('Creating and saving sua spy')
+    species, project, subject, date, experiment, session = get_session_info(cs_folder)
+    target_file = create_standard_container(project, subject, date, experiment, session, '.spy')
+    spy_filename = os.path.join(cs_folder, target_file)
+
+    sd = spy.SpikeData(data = np.column_stack([all_spikes[0], all_max_chan[all_spikes[1]], all_spikes[1]]).astype(int), 
+                       dimord = ['sample', 'channel', 'unit'], 
+                       samplerate = sorting.sampling_frequency)
+    
+    if 'mua' in locals():
+
+        mua.clear()
+    
+        mua._close()
+
+    mua = spy.load(spy_filename, tag = 'spikes')
+    sd.info = mua.info
+
+    spy.save(sd, container = spy_filename, tag = 'SUA', overwrite=True)
+
+    return sd
