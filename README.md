@@ -45,7 +45,7 @@ Determines whether each channel's receptive field overlaps with the visual stimu
 2. **prepare_RF.py** — Converts Gaussian RF fits (azimuth, elevation, radius) from spherical to Cartesian coordinates. Matches each session to the closest RF mapping session.
 3. **corner_order.py** — Reorders stimulus corner coordinates to a consistent winding order for the projective transform.
 4. **warping_stim.py** — Warps each stimulus image into its on-screen polygon at each time point using a projective transform on the thresholded stimulus outline. Saves warped outlines in HDF5.
-5. **RFarea_stim_collapse.py** — Tests RF-stimulus overlap using Shapely geometric intersection. Detects degenerate ("collapsed") stimulus polygons and handles them accordingly. Saves per-channel, per-trial, per-time-point overlap results.
+5. **RFarea_stim_collapse.py** — Tests RF-stimulus overlap using Shapely geometric intersection. Detects ("collapsed") stimulus polygons and handles them accordingly. Saves per-channel, per-trial, per-time-point overlap results.
 6. **RFoverlap_perc_collapse.py** — Plots the percentage of time each channel's RF overlaps with stimulus A vs B.
 7. **RF_map_flow.py** — Documents the HDF5 data structure and time alignment between mapping and neural data.
 
