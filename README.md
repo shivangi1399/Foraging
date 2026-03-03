@@ -4,15 +4,15 @@ Analysis of neural and behavioral data from a leaf foraging task recorded in a d
 
 ## Task
 
-On each trial, two morphed visual stimuli are presented and the subject must select one. Trials vary in difficulty (morph ratio: easy 30/70, hard 49/51) and reward level.
+On each trial, two morphed visual stimuli are presented, and the subject must select one in the discrimination task, which models foraging. Trials vary in difficulty (morph ratio: easy 30/70, hard 49/51) and reward level.
 
 ## Analysis overview
 
 ### Preprocessing (`code/preprocessing/`)
 - **cut_trials.py** — Segments continuous neural data into trials aligned to stimulus onset. Extracts trial info (trial number, reward, difficulty) from Unreal Engine log files and saves in Syncopy and MATLAB formats.
 - **cosmos_data_matlab.m** — Converts Syncopy LFP data into FieldTrip format for artifact rejection.
-- **artifact_rejection.m** — Visual artifact rejection on FieldTrip-formatted LFP, converts cleaned data back to Syncopy format.
-- **load_cleaned_data.py** — Loads artifact-rejected LFP data back into Python via Syncopy.
+- **artifact_rejection.m** — Visual artifact rejection on FieldTrip-formatted LFP.
+- **load_cleaned_data.py** — Converts cleaned data back to Syncopy format. Loads artifact-rejected LFP data back into Python via Syncopy.
 
 ### Parameter analysis (`code/Parameter analysis/`)
 - **trial_parameter_analysis.py** — Timelock analyses split by reward level and difficulty, plotted per array and channel.
@@ -28,18 +28,16 @@ Cognitive states are inferred from behavioral emissions (e.g., reaction times) u
 - **states_beh_stats.py** — Chi-squared/Fisher's exact tests for trial outcome proportions, Mann-Whitney U tests for pairwise RT comparisons (Bonferroni corrected).
 
 #### LFP — assigned states (`code/States_analysis/lfp/assigned_state/`)
-- **foraging_states.py** — Core state-dependent LFP analysis. Computes trial-wise ERPs, power spectra (2-100 Hz, multitaper), and FOOOF aperiodic-corrected residual spectra per state. Runs nonparametric permutation tests (1000 permutations, max/min correction) between state pairs at single-channel, array, and merged-array levels.
+- **erp_spectra_stats.py** — Core state-dependent LFP analysis. Computes trial-wise ERPs, power spectra (2-100 Hz, multitaper), and FOOOF aperiodic-corrected residual spectra per state. Runs nonparametric permutation tests (1000 permutations, max/min correction) between state pairs at single-channel, array, and merged-array levels.
 - **coherence.py** — Trial-wise inter-array LFP coherence per state with permutation-based significance testing across frequency.
 - **state_lfp_fig.py** — Summary figures: ERP/spectra with significance masks, heatmaps, coherence comparisons, and frequency-band summaries.
-- **erp_spectra_stats.py** — Additional ERP and spectral statistics.
 
 #### LFP — state probability (`code/States_analysis/lfp/state_prob/`)
 - **erp_spec_state_prob.ipynb** — ERP and spectral analysis using continuous state probabilities.
-- **erp_spectra_stats.py** — Statistical comparisons using state probability weighting.
 
 ### RF-to-stimulus mapping (`code/RF_VR_mapping/RFarea_stim_collapse_time/`)
 
-Determines whether each channel's receptive field overlaps with the visual stimuli on each trial and time point, accounting for gaze-dependent coordinate transformations and stimulus collapse artifacts. The pipeline runs in sequence:
+Determines whether each channel's receptive field overlaps with the visual stimuli on each trial and time point, accounting for gaze-dependent coordinate transformations, the monkey's position in the VR, and stimulus collapse artifacts. The pipeline runs in sequence:
 
 1. **mapping_corners.py** — Parses stimulus positions from log files, computes stimulus corner coordinates in dome space, transforms to gaze-centered retinal then Cartesian coordinates using eye tracking alignment.
 2. **prepare_RF.py** — Converts Gaussian RF fits (azimuth, elevation, radius) from spherical to Cartesian coordinates. Matches each session to the closest RF mapping session.
