@@ -166,6 +166,7 @@ for session_name in sessions:
     log_filepath = os.path.join(session_log_dir, log_files[0])
     with TextLog(log_filepath) as log:
         evt, ts, evt_desc, true_ts = log.parse_eventmarkers()
+
     trial_onset = ts[np.where(evt == 3000)[0]]
     block_idx = np.where(evt == 3091)[0]
     block_end_trial_indices = sorted(set(
@@ -173,6 +174,7 @@ for session_name in sessions:
     ))
 
     # --- Compute first 10% of trials after each block exit ---
+    perc = 10
     n_total_trials = len(trial_onset)
     block_starts = [be + 1 for be in block_end_trial_indices if be + 1 < n_total_trials]
     block_boundaries = sorted(block_starts + [n_total_trials])
@@ -181,11 +183,11 @@ for session_name in sessions:
         blk_start = block_starts[i]
         blk_end = block_boundaries[i + 1] if i + 1 < len(block_boundaries) else n_total_trials
         blk_len = blk_end - blk_start
-        n_post = max(1, math.ceil(0.10 * blk_len))
+        n_post = max(1, math.ceil(perc * 0.01 * blk_len))
         for t in range(blk_start, blk_start + n_post):
             post_exit_trial_set.add(t)
     print(f"  Block ends at trials: {block_end_trial_indices}")
-    print(f"  Post-exit (first 10%) trial count: {len(post_exit_trial_set)}")
+    print(f"  Post-exit (first {perc}%) trial count: {len(post_exit_trial_set)}")
 
     # load LFP data
     datalfp = spy.load(lfp_path)
@@ -208,7 +210,7 @@ for session_name in sessions:
         state_rows = states_post_filt[states_post_filt['States'] == state_value]
         post_trial_positions = np.where(
             states_trial_info_filt['TrialIndex'].isin(state_rows['TrialIndex'])
-        )[0]
+        )[0] # the position within the data object after LFP selection
         if len(post_trial_positions) == 0:
             continue
         cfg_sel = spy.StructDict(trials=post_trial_positions)
