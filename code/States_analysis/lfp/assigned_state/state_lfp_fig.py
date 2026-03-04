@@ -17,7 +17,7 @@ from matplotlib.colors import LinearSegmentedColormap
 # -----------------------------
 # User Config
 # -----------------------------
-results_data_dir = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/200_600/all_trials'
+results_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/200_600/erp_spectra/all_trials'
 output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/200_600/erp_spectra/summary_plots'
 os.makedirs(output_dir, exist_ok=True)
 
@@ -204,7 +204,7 @@ print(f"All plots (real data + summary) saved under {output_dir}")
 # Coherence
 # =============================================================
 
-results_dir = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/coherence_scipy_trialwise'
+results_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/200_600/coherence_scipy_trialwise'
 output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/200_600/coherence_scipy_trialwise/summary_plots'
 os.makedirs(output_dir, exist_ok=True)
 

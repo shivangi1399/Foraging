@@ -56,7 +56,7 @@ trial_info_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_da
 states_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/states_analysis'
 output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/200_600/erp_spectra'
 results_dir = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp'
-results_data_dir = os.path.join(results_dir, "200_600", "all_trials")
+results_data_dir = os.path.join(results_dir, "all_trials", "200_600")
 
 os.makedirs(output_dir, exist_ok=True)
 os.makedirs(results_data_dir, exist_ok=True)
