@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 from fooof import FOOOF
 import syncopy as spy
 import json
+from matplotlib.colors import LinearSegmentedColormap
 
 # custom path for parse_logfile
 sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/unreal_logfile')
@@ -353,7 +354,7 @@ else:
                     axes[j].set_visible(False)
                 fig.suptitle(f"Post-exit {plot_type} {s1} vs {s2} - Array {i_arr+1}")
                 plt.tight_layout(rect=[0, 0, 1, 0.95])
-                fname = os.path.join(output_dir, f"perm_{plot_type}_pair{s1}_{s2}_array{i_arr+1}.pdf")
+                fname = os.path.join(results_data_dir, f"perm_{plot_type}_pair{s1}_{s2}_array{i_arr+1}.pdf")
                 fig.savefig(fname)
                 plt.close(fig)
 
@@ -401,7 +402,7 @@ else:
                     ax_arr.set_ylabel('ΔAmplitude' if plot_type == 'timelock' else 'ΔResidual Power')
                     plt.tight_layout()
                     fname_arr = os.path.join(
-                        output_dir, f"perm_{plot_type}_pair{s1}_{s2}_ARRAYCOMBINED_array{i_arr+1}.pdf")
+                        results_data_dir, f"perm_{plot_type}_pair{s1}_{s2}_ARRAYCOMBINED_array{i_arr+1}.pdf")
                     fig_arr.savefig(fname_arr)
                     plt.close(fig_arr)
 
@@ -489,7 +490,7 @@ else:
                     ax_arr.set_ylabel('ΔAmplitude' if plot_type == 'timelock' else 'ΔResidual Power')
                     plt.tight_layout()
                     fname_arr = os.path.join(
-                        output_dir, f"cb_perm_{plot_type}_pair{s1}_{s2}_{array_label.replace('-', '')}.pdf")
+                        results_data_dir, f"cb_perm_{plot_type}_pair{s1}_{s2}_{array_label.replace('-', '')}.pdf")
                     fig_arr.savefig(fname_arr)
                     plt.close(fig_arr)
 
@@ -506,4 +507,165 @@ else:
                             array_index=i_arr + 1
                         )
 
-    print(f"Permutation-test results saved under {output_dir}")
+    print(f"Permutation-test results saved under {results_data_dir}")
+
+# =============================================================
+# Summary Figures 
+# =============================================================
+
+states = [0, 1, 2, 3]
+arrays = [1, 2, 3, 4, 5, 6]
+state_colors = {
+    0: (0.55, 0.0, 0.55),   # purple
+    1: (0.0, 0.39, 0.39),   # teal
+    2: (0.8, 0.33, 0.0),    # orange
+    3: (0.25, 0.35, 0.55)   # slate blue
+}
+sig_color = '#8dd3c7'
+teal_cmap = LinearSegmentedColormap.from_list('teal_map', ['white', '#1f9e89'])
+pairs = list(itertools.combinations(states, 2))
+
+
+def load_permdata_summary(plot_type, s1, s2, array_index):
+    """Load array-level permutation test results."""
+    fname = f"permdata_{plot_type}_pair{s1}_{s2}_ARRAY_array{array_index}.npz"
+    fpath = os.path.join(results_data_dir, fname)
+    if not os.path.exists(fpath):
+        return None
+    return np.load(fpath)
+
+
+def load_permdata_merged(plot_type, s1, s2, array_label):
+    """Load merged-array permutation results."""
+    fname = f"cb_permdata_{plot_type}_pair{s1}_{s2}_{array_label.replace('-', '')}.npz"
+    fpath = os.path.join(results_data_dir, fname)
+    if not os.path.exists(fpath):
+        return None
+    return np.load(fpath)
+
+
+for plot_type in ['timelock', 'residual']:
+    ylabel = 'Amplitude' if plot_type == 'timelock' else 'Residual Power'
+    n_rows, n_cols = len(arrays), len(pairs)
+
+    # -----------------------------
+    # Summary Figure 1: Real data + significance masks
+    # -----------------------------
+    fig_real, axes_real = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 3*n_rows), sharex='col', sharey='row')
+    if n_rows == 1: axes_real = np.expand_dims(axes_real, 0)
+    if n_cols == 1: axes_real = np.expand_dims(axes_real, 1)
+
+    summary_mask = []
+
+    for i_array, array_index in enumerate(arrays):
+        summary_mask_array = []
+        for j_pair, (s1, s2) in enumerate(pairs):
+            ax = axes_real[i_array, j_pair]
+            perm_array = load_permdata_summary(plot_type, s1, s2, array_index)
+
+            if perm_array is None:
+                ax.axis('off')
+                summary_mask_array.append(None)
+                continue
+
+            x_axis = perm_array['x_axis']
+            data1, data2 = perm_array['mean1'], perm_array['mean2']
+            sig_mask = perm_array['sig']
+
+            ax.plot(x_axis, data1, color=state_colors[s1], label=f"State {s1}")
+            ax.plot(x_axis, data2, color=state_colors[s2], label=f"State {s2}")
+            ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1], where=sig_mask,
+                            color=sig_color, alpha=0.4)
+
+            if i_array == 0: ax.set_title(f"{s1} vs {s2}", fontsize=10)
+            if j_pair == 0: ax.set_ylabel(f"Array {array_index}\n{ylabel}")
+            if i_array == n_rows - 1:
+                xlabel = 'Time (s)' if plot_type == 'timelock' else 'Frequency (Hz)'
+                ax.set_xlabel(xlabel)
+            ax.legend(fontsize=6)
+
+            summary_mask_array.append(sig_mask)
+        summary_mask.append(summary_mask_array)
+
+    plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.08, wspace=0.25, hspace=0.25)
+    plt.suptitle(f"Post-exit {plot_type} - Mean across all sessions", fontsize=14)
+    plt.savefig(os.path.join(output_dir, f"{plot_type}_all_arrays_pairs.pdf"))
+    plt.close()
+
+    # -----------------------------
+    # Summary Figure 2: Significance heatmap
+    # -----------------------------
+    n_arrays, n_pairs, n_time = len(arrays), len(pairs), len(x_axis)
+    summary_array = np.zeros((n_arrays, n_pairs, n_time), dtype=int)
+
+    for i_array in range(n_arrays):
+        for j_pair in range(n_pairs):
+            mask = summary_mask[i_array][j_pair]
+            if mask is not None and mask.shape[0] == n_time:
+                summary_array[i_array, j_pair, :] = mask.astype(int)
+
+    fig_sum, axes_sum = plt.subplots(1, n_pairs, figsize=(6*n_pairs, 4), sharey=True)
+    if n_pairs == 1: axes_sum = [axes_sum]
+
+    for j_pair, (s1, s2) in enumerate(pairs):
+        ax = axes_sum[j_pair]
+        im = ax.imshow(summary_array[:, j_pair, :], cmap=teal_cmap, aspect='auto', interpolation='none',
+                       extent=[x_axis[0], x_axis[-1], 0.5, n_arrays + 0.5])
+        ax.set_title(f"{s1} vs {s2}")
+        ax.set_xlabel('Time (s)' if plot_type == 'timelock' else 'Frequency (Hz)')
+        if j_pair == 0:
+            ax.set_ylabel('Arrays')
+            ax.set_yticks(range(1, n_arrays + 1))
+            ax.set_yticklabels([str(a) for a in arrays])
+
+    plt.subplots_adjust(left=0.05, right=0.88, top=0.88, bottom=0.12, wspace=0.3)
+    cbar_ax = fig_sum.add_axes([0.90, 0.12, 0.02, 0.76])
+    cbar = fig_sum.colorbar(im, cax=cbar_ax)
+    cbar.set_label('Significant (1=pairwise)')
+
+    plt.suptitle(f"Post-exit {plot_type} - Pairwise significance across arrays and state pairs", fontsize=14)
+    plt.savefig(os.path.join(output_dir, f"{plot_type}_pairwise_summary_all_arrays.pdf"))
+    plt.close()
+
+    # -----------------------------
+    # Summary Figure 3: Merged arrays (1-3 combined, 4, 5, 6)
+    # -----------------------------
+    array_labels = ['Array 1-3', 'Array 4', 'Array 5', 'Array 6']
+    n_mrows, n_mcols = len(pairs), len(array_labels)
+
+    fig_merged, axes_merged = plt.subplots(n_mrows, n_mcols, figsize=(6*n_mcols, 3*n_mrows),
+                                            sharex='col', sharey='row')
+    if n_mrows == 1: axes_merged = np.expand_dims(axes_merged, 0)
+    if n_mcols == 1: axes_merged = np.expand_dims(axes_merged, 1)
+
+    for i_pair, (s1, s2) in enumerate(pairs):
+        for j_array, array_label in enumerate(array_labels):
+            ax = axes_merged[i_pair, j_array]
+            perm_data = load_permdata_merged(plot_type, s1, s2, array_label)
+
+            if perm_data is None:
+                ax.axis('off')
+                continue
+
+            x_axis = perm_data['x_axis']
+            mean1, mean2 = perm_data['mean1'], perm_data['mean2']
+            sig_mask = perm_data['sig']
+
+            ax.plot(x_axis, mean1, color=state_colors[s1], label=f"State {s1}")
+            ax.plot(x_axis, mean2, color=state_colors[s2], label=f"State {s2}")
+            ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1], where=sig_mask,
+                            color=sig_color, alpha=0.4)
+
+            if i_pair == 0: ax.set_title(f"{array_label}", fontsize=10)
+            if j_array == 0: ax.set_ylabel(f"{s1} vs {s2}\n{ylabel}")
+            if i_pair == n_mrows - 1:
+                xlabel = 'Time (s)' if plot_type == 'timelock' else 'Frequency (Hz)'
+                ax.set_xlabel(xlabel)
+            ax.legend(fontsize=6)
+
+    plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.08, wspace=0.25, hspace=0.25)
+    plt.suptitle(f"Post-exit {plot_type} - Mean across all sessions (merged arrays)", fontsize=14)
+    plt.savefig(os.path.join(output_dir, f"{plot_type}_merged_arrays_pairs.pdf"))
+    plt.close()
+
+print(f"\nAll summary plots saved under {output_dir}")
