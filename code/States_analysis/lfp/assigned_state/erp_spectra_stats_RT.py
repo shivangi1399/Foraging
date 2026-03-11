@@ -12,7 +12,7 @@ For each session:
 - LFP data are loaded (stimulus-aligned, full length).
 - RT values are loaded from emissions.npy.
 - For each trial, a fixed window around RT is extracted:
-    [RT - 0.4 s, RT + 0.2 s]  (time 0 = RT).
+    [RT - 0.45 s, RT + 0.45 s]  (time 0 = RT).
 - Trials and channels containing only NaNs are removed.
 - Trials are grouped by cognitive state.
 - Three signal representations are computed:
@@ -84,8 +84,8 @@ alpha = 0.05
 rng = np.random.default_rng(42)
 
 # RT-centering parameters
-pre_rt = 0.4   # seconds before RT
-post_rt = 0.2  # seconds after RT
+pre_rt = 0.45   # seconds before RT
+post_rt = 0.45  # seconds after RT
 
 # load states info for all sessions
 state_probs = np.load(f'{states_data_dir}/foraging_shivangi_no_sess1_clipped_state_assignments.npy')
@@ -216,6 +216,9 @@ state_data_timelock = {}
 state_data_spectra = {}
 state_data_residuals = {}
 
+total_trials_kept = 0
+total_trials_discarded = 0
+
 for session_name in sessions:
     print(f"\n=== Processing session {session_name} ===")
     lfp_path = os.path.join(lfp_data_dir, session_name, 'Cleaned_lfp_FT.spy')
@@ -288,13 +291,27 @@ for session_name in sessions:
         if not rt_centered_trials:
             continue
 
-        # Ensure all segments have the same length (use minimum)
-        min_len = min(seg.shape[0] for seg in rt_centered_trials)
-        rt_centered_trials = [seg[:min_len, :] for seg in rt_centered_trials]
+        # Only keep trials with at least 0.45s on both sides of RT
+        expected_len = int(np.round((pre_rt + post_rt) * fs))
+        seg_lengths = np.array([seg.shape[0] for seg in rt_centered_trials])
+        n_before = len(rt_centered_trials)
+        rt_centered_trials = [seg[:expected_len, :] for seg in rt_centered_trials
+                              if seg.shape[0] >= expected_len]
+        n_after = len(rt_centered_trials)
+        n_discarded = n_before - n_after
+        total_trials_kept += n_after
+        total_trials_discarded += n_discarded
+        print(f"  State {state_value}: kept {n_after}/{n_before} trials "
+              f"(discarded {n_discarded} with <{expected_len} samples for "
+              f"{pre_rt}+{post_rt}s window)")
+
+        if not rt_centered_trials:
+            continue
+
         trials_array = np.stack(rt_centered_trials, axis=0)  # (nTrials, nSamples, nChannels)
 
         # Create RT-centered time vector (time 0 = RT)
-        time_vec = np.linspace(-pre_rt, post_rt, min_len)
+        time_vec = np.linspace(-pre_rt, post_rt, expected_len)
 
         # Remove all-NaN channels
         valid_ch_mask = ~np.all(np.isnan(trials_array), axis=(0, 1))
@@ -311,7 +328,7 @@ for session_name in sessions:
             continue
 
         print(f"  State {state_value}: {trials_array.shape[0]} trials, "
-              f"{len(valid_channels)} channels, {min_len} samples")
+              f"{len(valid_channels)} channels, {expected_len} samples")
 
         # --- Spectra (2–100 Hz, periodogram with Hann window) ---
         power_trials, freqs_combined = compute_spectrum_trials(trials_array, fs)
@@ -322,7 +339,13 @@ for session_name in sessions:
         freq_res = np.median(np.diff(freqs_combined))
         for ch_i, ch_name in enumerate(valid_channels):
             try:
-                fm = FOOOF(peak_width_limits=[max(2 * freq_res, 1.0), 12],
+                lower_pw = max(2 * freq_res, 1.0)
+                upper_pw = 12
+                if lower_pw >= upper_pw:
+                    print(f"  FOOOF skipped {session_name}, ch {ch_name}: "
+                          f"freq resolution too coarse ({freq_res:.2f} Hz)")
+                    continue
+                fm = FOOOF(peak_width_limits=[lower_pw, upper_pw],
                            max_n_peaks=6,
                            min_peak_height=0.05,
                            peak_threshold=1.5,
@@ -345,6 +368,11 @@ for session_name in sessions:
                                                   'freqs': freqs_combined,
                                                   'channels': valid_channels})
 
+
+print(f"\n=== Trial selection summary ===")
+print(f"  Total trials kept:      {total_trials_kept}")
+print(f"  Total trials discarded: {total_trials_discarded}")
+print(f"  Fraction kept:          {total_trials_kept / (total_trials_kept + total_trials_discarded):.1%}")
 
 # -----------------------------
 # Permutation tests (pairwise)
@@ -403,6 +431,11 @@ for plot_type, store in [('timelock', state_data_timelock),
                     data1 = np.stack(vals1, axis=0)
                     data2 = np.stack(vals2, axis=0)
                 else:
+                    # Trim to common sample length across sessions
+                    min_samples = min(v.shape[1] for v in vals1 + vals2)
+                    vals1 = [v[:, :min_samples] for v in vals1]
+                    vals2 = [v[:, :min_samples] for v in vals2]
+                    x_axis = x_axis[:min_samples]
                     data1 = np.concatenate(vals1, axis=0)
                     data2 = np.concatenate(vals2, axis=0)
 
@@ -473,6 +506,11 @@ for plot_type, store in [('timelock', state_data_timelock),
                 else:
                     vals2_array.append(np.mean(np.mean(sess['trials'][:, :, ch_idx], axis=0), axis=1))
             if vals1_array and vals2_array:
+                # Trim to common sample length across sessions
+                min_samples = min(v.shape[0] for v in vals1_array + vals2_array)
+                vals1_array = [v[:min_samples] for v in vals1_array]
+                vals2_array = [v[:min_samples] for v in vals2_array]
+                x_axis = x_axis[:min_samples]
                 data1_array = np.stack(vals1_array, axis=0)
                 data2_array = np.stack(vals2_array, axis=0)
                 diff_array, sig_array, thr_array = permutation_test(
@@ -574,6 +612,11 @@ for plot_type, store in [('timelock', state_data_timelock),
 
             # --- Run permutation test ---
             if vals1_array and vals2_array:
+                # Trim to common sample length across sessions
+                min_samples = min(v.shape[0] for v in vals1_array + vals2_array)
+                vals1_array = [v[:min_samples] for v in vals1_array]
+                vals2_array = [v[:min_samples] for v in vals2_array]
+                x_axis = x_axis[:min_samples]
                 data1_array = np.stack(vals1_array, axis=0)
                 data2_array = np.stack(vals2_array, axis=0)
                 diff_array, sig_array, thr_array = permutation_test(
