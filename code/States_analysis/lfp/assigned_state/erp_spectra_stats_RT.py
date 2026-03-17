@@ -467,6 +467,8 @@ for plot_type, store in [('timelock', state_data_timelock),
                 ax.fill_between(x_axis, diff, where=sig, color='red', alpha=0.4)
                 ax.axhline(0, color='gray', lw=0.5)
                 ax.set_title(ch_name, fontsize=7)
+                if plot_type == 'timelock':
+                    ax.set_ylim(-15, 15)
             for j in range(len(ch_names), 36):
                 axes[j].set_visible(False)
             fig.suptitle(f"{plot_type} {s1} vs {s2} - Array {i_arr+1} (RT-centered)")
@@ -522,6 +524,8 @@ for plot_type, store in [('timelock', state_data_timelock),
                 ax_arr.set_title(f"Array {i_arr+1} ({plot_type}) {s1} vs {s2} (RT-centered)")
                 ax_arr.set_xlabel('Time rel. RT (s)' if plot_type == 'timelock' else 'Frequency (Hz)')
                 ax_arr.set_ylabel('ΔAmplitude' if plot_type == 'timelock' else 'ΔResidual Power')
+                if plot_type == 'timelock':
+                    ax_arr.set_ylim(-15, 15)
                 plt.tight_layout()
                 fname_arr = os.path.join(
                     output_dir, f"perm_{plot_type}_pair{s1}_{s2}_ARRAYCOMBINED_array{i_arr+1}.pdf")
@@ -631,6 +635,8 @@ for plot_type, store in [('timelock', state_data_timelock),
                 ax_arr.set_title(f"{array_label} ({plot_type}) {s1} vs {s2} (RT-centered)")
                 ax_arr.set_xlabel('Time rel. RT (s)' if plot_type == 'timelock' else 'Frequency (Hz)')
                 ax_arr.set_ylabel('ΔAmplitude' if plot_type == 'timelock' else 'ΔResidual Power')
+                if plot_type == 'timelock':
+                    ax_arr.set_ylim(-15, 15)
                 plt.tight_layout()
                 fname_arr = os.path.join(
                     output_dir, f"cb_perm_{plot_type}_pair{s1}_{s2}_{array_label.replace('-', '')}.pdf")
@@ -668,7 +674,7 @@ summary_output_dir = os.path.join(output_dir, 'summary_plots')
 os.makedirs(summary_output_dir, exist_ok=True)
 
 plot_types_fig = ['timelock', 'residual']
-states = list(range(N_STATES_TO_USE))
+states = [s for s in range(N_STATES_TO_USE) if s != 1]  # exclude state 1 (can be added back later)
 arrays_list = [1, 2, 3, 4, 5, 6]
 state_colors = {
     0: (0.55, 0.0, 0.55),   # purple
@@ -731,6 +737,8 @@ for plot_type in plot_types_fig:
 
             ax.plot(x_axis, data1, color=state_colors[s1], label=f"State {s1}")
             ax.plot(x_axis, data2, color=state_colors[s2], label=f"State {s2}")
+            if plot_type == 'timelock':
+                ax.set_ylim(-15, 15)
             ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1], where=sig_mask,
                             color=sig_color, alpha=0.4)
 
@@ -817,6 +825,8 @@ for plot_type in plot_types_fig:
 
             ax.plot(x_axis, data1, color=state_colors[s1], label=f"State {s1}")
             ax.plot(x_axis, data2, color=state_colors[s2], label=f"State {s2}")
+            if plot_type == 'timelock':
+                ax.set_ylim(-15, 15)
             ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1], where=sig_mask,
                             color=sig_color, alpha=0.4)
 
