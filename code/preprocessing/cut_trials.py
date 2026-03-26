@@ -178,7 +178,7 @@ for file_rel in filenames:
 
 
 """
-# Cutting and saving neural data - centered at stim A spawn time ------------------------------------------- don't use this codes
+# Cutting and saving neural data - centered at stim A spawn time ------------------------------------------- don't use this code
 # The trial is cut between start and reward - didn't work out very well cuz could not reproduce this - use log file instead of eventdata
 
 foldername = '/cs/projects/MWzeronoise/test_recordings/Cosmos'

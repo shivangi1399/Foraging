@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/unreal_logfile')
 from parse_logfile import TextLog #run this in warping env
 
-sessions = ['20230213'] #['20230209', '20230203', '20230208', '20230214']
+sessions = ['20230208'] #['20230209', '20230203', '20230208', '20230213', '20230214']
 
 for session in sessions:
   
