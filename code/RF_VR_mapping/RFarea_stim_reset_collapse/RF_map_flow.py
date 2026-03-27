@@ -19,7 +19,8 @@ from parse_logfile import TextLog
             │   ├── RF_center
             │   ├── radius
             │   ├── inside_transformed_outline_A
-            │   └── inside_transformed_outline_B
+            │   ├── inside_transformed_outline_B
+            │   └── inside_transformed_outline_C
             ├── Point_2_xx_yy
             └── ...
 - All RFs are iterated one-to-one between `center_coords` and `rf_radius`, and only RFs with non-NaN centers and radii are tested 

@@ -86,16 +86,17 @@ output_hdf5_file =  '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/RF_VR_m
 save_path = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/RF VR mapping/RFarea_VR_collapse(entire trial).pdf'
 aligned_stim_times = aligned_stim_times_list
 
-def process_file(file_path: str, aligned_stim_times: List[np.ndarray], max_trials: Optional[int] = None, max_time_points: Optional[int] = None) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int]]:
+def process_file(file_path: str, aligned_stim_times: List[np.ndarray], max_trials: Optional[int] = None, max_time_points: Optional[int] = None) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int]]:
     total_counts = defaultdict(int)
     inside_a_counts = defaultdict(int)
     inside_b_counts = defaultdict(int)
-        
+    inside_c_counts = defaultdict(int)
+
     with h5py.File(file_path, 'r') as file:
         for trial_index, trial_name in enumerate(file.keys()):
             if max_trials is not None and trial_index >= max_trials:
                 break
-            
+
             trial_group = file[trial_name]
             trial_times = aligned_stim_times[trial_index]
             valid_time_indices = np.arange(len(trial_times))
@@ -113,27 +114,31 @@ def process_file(file_path: str, aligned_stim_times: List[np.ndarray], max_trial
                     point_group = time_point_group[point_name]
                     inside_a = point_group['inside_transformed_outline_A'][()]
                     inside_b = point_group['inside_transformed_outline_B'][()]
+                    inside_c = point_group['inside_transformed_outline_C'][()]
                     point_id = f'Point_{point_index}'
                     point_index += 1
                     total_counts[point_id] += 1
                     inside_a_counts[point_id] += int(inside_a)
                     inside_b_counts[point_id] += int(inside_b)
+                    inside_c_counts[point_id] += int(inside_c)
 
-    return total_counts, inside_a_counts, inside_b_counts
+    return total_counts, inside_a_counts, inside_b_counts, inside_c_counts
 
 
 def plot_percent_inside(file_path: str, save_path: str, aligned_stim_times: List[np.ndarray], max_trials: Optional[int] = None, max_time_points: Optional[int] = None) -> None:
     try:
-        total_counts, inside_a_counts, inside_b_counts = process_file(
+        total_counts, inside_a_counts, inside_b_counts, inside_c_counts = process_file(
             file_path, aligned_stim_times, max_trials=max_trials, max_time_points=max_time_points
         )
 
         percent_inside_a = {point: (inside_a_counts[point] / total_counts[point]) * 100 for point in total_counts}
         percent_inside_b = {point: (inside_b_counts[point] / total_counts[point]) * 100 for point in total_counts}
+        percent_inside_c = {point: (inside_c_counts[point] / total_counts[point]) * 100 for point in total_counts}
 
         points = list(total_counts.keys())
         percentages_a = [percent_inside_a[point] for point in points]
         percentages_b = [percent_inside_b[point] for point in points]
+        percentages_c = [percent_inside_c[point] for point in points]
 
         chunk_size = 32
         num_chunks = (len(points) + chunk_size - 1) // chunk_size
@@ -147,11 +152,13 @@ def plot_percent_inside(file_path: str, save_path: str, aligned_stim_times: List
             chunk_points = points[start_idx:end_idx]
             chunk_percentages_a = percentages_a[start_idx:end_idx]
             chunk_percentages_b = percentages_b[start_idx:end_idx]
+            chunk_percentages_c = percentages_c[start_idx:end_idx]
 
             x = np.arange(len(chunk_points))
-            width = 0.35
-            ax.bar(x - width / 2, chunk_percentages_a, width, label='InsideOutlineA (%)')
-            ax.bar(x + width / 2, chunk_percentages_b, width, label='InsideOutlineB (%)')
+            width = 0.25
+            ax.bar(x - width, chunk_percentages_a, width, label='InsideOutlineA (%)')
+            ax.bar(x, chunk_percentages_b, width, label='InsideOutlineB (%)')
+            ax.bar(x + width, chunk_percentages_c, width, label='InsideOutlineC (%)')
             ax.set_xlabel('Test Points or channels')
             ax.set_ylabel('Percent of Time')
             ax.set_title(f'Percentage of Time Test Points Are Inside Outlines (Points {start_idx + 1} to {end_idx})') #points mean channel here
