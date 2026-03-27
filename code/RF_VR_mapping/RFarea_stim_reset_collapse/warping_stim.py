@@ -48,7 +48,7 @@ for session in sessions:
 
     # Add TargetIdentity column based on 'Right'
     df['TargetIdentity'] = np.where(df['Right'] == 1, 'A', 'B') #df['Right'] means the target was on the right. Stim A is always on right etc
-    df['TargetIdentity_C'] = 'C'  # C is always present
+    # C is always the apple (morph 100)
     
     # Prepare a dictionary to store aggregated data
     aggregated_data = {
@@ -65,18 +65,15 @@ for session in sessions:
         # Collect morph targets for each identity
         a_morph_targets = trial_subset[trial_subset['TargetIdentity'] == 'A']['MorphTarget'].tolist()
         b_morph_targets = trial_subset[trial_subset['TargetIdentity'] == 'B']['MorphTarget'].tolist()
-        c_morph_targets = trial_subset[trial_subset['TargetIdentity_C'] == 'C']['MorphTarget'].tolist()
-        
         # Convert lists to space-separated strings
         a_identity_str = ' '.join(map(str, a_morph_targets))
         b_identity_str = ' '.join(map(str, b_morph_targets))
-        c_identity_str = ' '.join(map(str, c_morph_targets))
         
         # Add to aggregated data
         aggregated_data['TrialIndex'].append(trial_index)
         aggregated_data['A_Identity'].append(a_identity_str)
         aggregated_data['B_Identity'].append(b_identity_str)
-        aggregated_data['C_Identity'].append(c_identity_str)
+        aggregated_data['C_Identity'].append('100')
 
     # Create the final DataFrame
     aggregated_df = pd.DataFrame(aggregated_data)
@@ -85,13 +82,11 @@ for session in sessions:
     def fill_gaps(row):
         a_identity_str = row['A_Identity']
         b_identity_str = row['B_Identity']
-        c_identity_str = row['C_Identity']
 
         # Convert strings to lists
         a_identity_list = a_identity_str.split() if a_identity_str else []
         b_identity_list = b_identity_str.split() if b_identity_str else []
-        c_identity_list = c_identity_str.split() if c_identity_str else []
-        
+
         # Define pairs
         pairs = {
             '30': '70',
@@ -99,23 +94,20 @@ for session in sessions:
             '49': '51',
             '51': '49'
         }
-        
+
         # Fill B_Identity if A_Identity has a specific value
         if a_identity_list and not b_identity_list:
-            # If A has specific values, fill B with corresponding pair
             b_identity_list = [pairs.get(a, '') for a in a_identity_list if pairs.get(a, '')]
-        
+
         # Fill A_Identity if B_Identity has a specific value
         if b_identity_list and not a_identity_list:
-            # If B has specific values, fill A with corresponding pair
             a_identity_list = [pairs.get(b, '') for b in b_identity_list if pairs.get(b, '')]
-        
+
         # Convert lists back to space-separated strings
         a_identity_str_filled = ' '.join(a_identity_list)
         b_identity_str_filled = ' '.join(b_identity_list)
-        c_identity_str_filled = ' '.join(c_identity_list)
 
-        return pd.Series([a_identity_str_filled, b_identity_str_filled, c_identity_str_filled])
+        return pd.Series([a_identity_str_filled, b_identity_str_filled, row['C_Identity']])
 
     # fill gaps
     aggregated_df[['A_Identity', 'B_Identity', 'C_Identity']] = aggregated_df.apply(fill_gaps, axis=1)
@@ -225,7 +217,7 @@ for session in sessions:
 
         A_Identity = row['A_Identity'].split()[0] if row['A_Identity'] else None
         B_Identity = row['B_Identity'].split()[0] if row['B_Identity'] else None
-        C_Identity = row['C_Identity'].split()[0] if row['C_Identity'] else '100'
+        C_Identity = '100'
         path_A = image_paths.get(A_Identity)
         path_B = image_paths.get(B_Identity)
         path_C = image_paths.get(C_Identity)
