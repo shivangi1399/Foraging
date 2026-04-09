@@ -25,7 +25,7 @@ from skimage.transform import ProjectiveTransform
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime #run this in warping env
 
-sessions = ['20230208'] #,'20230203', '20230208', '20230209','20230214']
+sessions = ['20230209'] #,'20230203', '20230208', '20230209','20230214']
 RF_sessions = ['20230202', '20230206', '20230209']
 
 base_path = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/RF_VR_mapping/RFs/center_radius'
