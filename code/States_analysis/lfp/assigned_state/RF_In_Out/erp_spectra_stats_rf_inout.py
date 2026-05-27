@@ -9,9 +9,9 @@ entry type, and compared with the same max/min permutation thresholding as
 erp_spectra_stats.py.
 
 Entry types (prev_state -> new_state):
-    (0, 1)  target_from_neither
+    (0, 1)  target_from_background
     (2, 1)  target_from_distractor
-    (0, 2)  distractor_from_neither
+    (0, 2)  distractor_from_background
     (1, 2)  distractor_from_target
 
 Also reports:
@@ -43,11 +43,6 @@ lfp_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_data
 eye_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/eye_data'
 rf_stim_dir  = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/RF_VR_mapping_no_reset/RFarea_stim'
 
-output_dir       = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/RF VR mapping_no_reset/RF_In_Out/entry_locked'
-results_data_dir = os.path.join(output_dir, 'data')
-os.makedirs(output_dir, exist_ok=True)
-os.makedirs(results_data_dir, exist_ok=True)
-
 sessions = ['20230203', '20230208', '20230209', '20230213', '20230214']
 
 session_logfiles = {
@@ -61,22 +56,24 @@ session_logfiles = {
 n_stimuli   = 5
 stim_name   = 'ImageStimulus'
 
-PRE          = 0.2     # s, pre-entry window
-POST         = 0.3     # s, post-entry window
-MIN_DWELL_S  = 0.05    # 50 ms — new state must hold this long after entry
+PRE          = 0.1     # s, pre-entry window
+POST         = 0.15     # s, post-entry window
+MIN_DWELL_S  = 0.15    # 50 ms — new state must hold this long after entry
 
-# If True, walk all transitions, generate diagnostic histograms (dwell + pre/post
-# per entry type) and counts, then exit BEFORE epoch extraction / permutation
-# tests. Use to pick PRE / POST. Set to False to run the full pipeline.
-STOP_AFTER_HISTOGRAMS = False
+output_dir       = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/RF VR mapping_no_reset/RF_In_Out/entry_locked_{int(PRE*1000)}_{int(POST*1000)}'
+results_data_dir = os.path.join(output_dir, 'data')
+os.makedirs(output_dir, exist_ok=True)
+os.makedirs(results_data_dir, exist_ok=True)
+
+RUN_HISTOGRAMS = False
 
 ENTRY_TYPES = {
-    (0, 1): 'target_from_neither',
+    (0, 1): 'target_from_background',
     (2, 1): 'target_from_distractor',
-    (0, 2): 'distractor_from_neither',
+    (0, 2): 'distractor_from_background',
     (1, 2): 'distractor_from_target',
 }
-STATE_LABELS = {0: 'neither', 1: 'target_in', 2: 'distractor_in'}
+STATE_LABELS = {0: 'background', 1: 'target_in', 2: 'distractor_in'}
 
 n_perms = 1000
 alpha   = 0.05
@@ -303,17 +300,13 @@ def find_runs(s):
 #   'epochs':         {(c_i, entry_type): np.array(n_epochs, epoch_len)},
 # }
 session_epochs = []
-dwell_durations = {0: [], 1: [], 2: []}
-# Per-entry-type metadata for ALL detected transitions (independent of PRE/POST/MIN_DWELL):
-#   prev_run_dur: duration of the prior state run (s)         → "available pre"
-#   new_run_dur:  duration of the new state run (s) = dwell   → "available post"
-#   max_pre:      seconds from trial start to entry sample    → trial-edge pre limit
-#   max_post:     seconds from entry sample to trial end      → trial-edge post limit
-entry_metadata = {et: {'prev_run_dur': [], 'new_run_dur': [],
-                       'max_pre':      [], 'max_post':    []}
-                  for et in ENTRY_TYPES.values()}
-n_entries_total = {et: 0 for et in ENTRY_TYPES.values()}   # all detected transitions
-n_entries_used  = {et: 0 for et in ENTRY_TYPES.values()}   # passing dwell + window filters
+n_entries_used  = {et: 0 for et in ENTRY_TYPES.values()}
+if RUN_HISTOGRAMS:
+    dwell_durations = {0: [], 1: [], 2: []}
+    entry_metadata = {et: {'prev_run_dur': [], 'new_run_dur': [],
+                           'max_pre':      [], 'max_post':    []}
+                      for et in ENTRY_TYPES.values()}
+    n_entries_total = {et: 0 for et in ENTRY_TYPES.values()}
 fs_ref = None
 epoch_t_ref = None
 
@@ -392,8 +385,9 @@ for sess_idx, session_name in enumerate(sessions):
                 s = states_t[:, c_i]
                 runs = find_runs(s)
 
-                for start, end, v in runs:
-                    dwell_durations[v].append((end - start) / fs)
+                if RUN_HISTOGRAMS:
+                    for start, end, v in runs:
+                        dwell_durations[v].append((end - start) / fs)
 
                 for k in range(1, len(runs)):
                     p_start, p_end, p_v = runs[k-1]
@@ -404,16 +398,13 @@ for sess_idx, session_name in enumerate(sessions):
                     if et is None:
                         continue
 
-                    # Record diagnostic metadata for every detected transition
-                    entry_metadata[et]['prev_run_dur'].append((p_end - p_start) / fs)
-                    entry_metadata[et]['new_run_dur' ].append((c_end - c_start) / fs)
-                    entry_metadata[et]['max_pre'     ].append(c_start / fs)
-                    entry_metadata[et]['max_post'    ].append((n_t - c_start) / fs)
-                    n_entries_total[et] += 1
-                    n_total_sess[et]    += 1
-
-                    if STOP_AFTER_HISTOGRAMS:
-                        continue              # skip epoch extraction in diagnostic mode
+                    if RUN_HISTOGRAMS:
+                        entry_metadata[et]['prev_run_dur'].append((p_end - p_start) / fs)
+                        entry_metadata[et]['new_run_dur' ].append((c_end - c_start) / fs)
+                        entry_metadata[et]['max_pre'     ].append(c_start / fs)
+                        entry_metadata[et]['max_post'    ].append((n_t - c_start) / fs)
+                        n_entries_total[et] += 1
+                        n_total_sess[et]    += 1
 
                     # Analysis filters
                     if (c_end - c_start) < min_dwell_samples:
@@ -429,115 +420,104 @@ for sess_idx, session_name in enumerate(sessions):
                     n_entries_used[et] += 1
                     n_used_sess[et]    += 1
 
-    if not STOP_AFTER_HISTOGRAMS:
-        epochs_arr = {key: np.stack(v, axis=0) for key, v in epochs_this.items() if v}
-        session_epochs.append({
-            'session':  session_name,
-            'channels': valid_channels,
-            'epoch_t':  epoch_t,
-            'fs':       fs,
-            'epochs':   epochs_arr,
-        })
-    print('  Entries this session — total:', n_total_sess)
-    if not STOP_AFTER_HISTOGRAMS:
-        print('                        used:',  n_used_sess)
+    epochs_arr = {key: np.stack(v, axis=0) for key, v in epochs_this.items() if v}
+    session_epochs.append({
+        'session':  session_name,
+        'channels': valid_channels,
+        'epoch_t':  epoch_t,
+        'fs':       fs,
+        'epochs':   epochs_arr,
+    })
+    if RUN_HISTOGRAMS:
+        print('  Entries this session — total:', n_total_sess)
+    print('  Entries this session — used:',  n_used_sess)
 
 
 # -----------------------------
 # Counts summary
 # -----------------------------
 print('\n=== Entry counts (pooled across sessions) ===')
-print(f'  {"entry type":28s} {"detected":>10s}   {"used":>8s}')
 for et in ENTRY_TYPES.values():
-    print(f'  {et:28s} {n_entries_total[et]:>10d}   '
-          f'{n_entries_used[et] if not STOP_AFTER_HISTOGRAMS else "—":>8}')
+    total_str = f'{n_entries_total[et]:>10d}' if RUN_HISTOGRAMS else f'{"—":>10s}'
+    print(f'  {et:28s}  detected={total_str}   used={n_entries_used[et]:>8d}')
 
 
-# -----------------------------
-# Dwell-time histograms (per RF state)
-# -----------------------------
-print('\n=== Dwell-time histograms (per state) ===')
-fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=False)
-for ax, st in zip(axes, [1, 2, 0]):
-    durs = np.array(dwell_durations[st]) if dwell_durations[st] else np.array([])
-    if durs.size:
-        ax.hist(durs, bins=60, range=(0, 3.0), color='steelblue', edgecolor='k', linewidth=0.4)
-        med = np.median(durs)
-        ax.axvline(med, color='red', linestyle='--', lw=1, label=f'median = {med*1000:.0f} ms')
-        ax.legend(fontsize=8)
-    ax.set_title(f'{STATE_LABELS[st]}  (n = {durs.size})')
-    ax.set_xlabel('Dwell time (s)')
-    ax.set_ylabel('Count')
-plt.tight_layout()
-fig.savefig(os.path.join(output_dir, 'dwell_time_histogram.pdf'))
-plt.close(fig)
+if RUN_HISTOGRAMS:
+    # -----------------------------
+    # Dwell-time histograms (per RF state)
+    # -----------------------------
+    print('\n=== Dwell-time histograms (per state) ===')
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=False)
+    for ax, st in zip(axes, [1, 2, 0]):
+        durs = np.array(dwell_durations[st]) if dwell_durations[st] else np.array([])
+        if durs.size:
+            ax.hist(durs, bins=60, range=(0, 3.0), color='steelblue', edgecolor='k', linewidth=0.4)
+            med = np.median(durs)
+            ax.axvline(med, color='red', linestyle='--', lw=1, label=f'median = {med*1000:.0f} ms')
+            ax.legend(fontsize=8)
+        ax.set_title(f'{STATE_LABELS[st]}  (n = {durs.size})')
+        ax.set_xlabel('Dwell time (s)')
+        ax.set_ylabel('Count')
+    plt.tight_layout()
+    fig.savefig(os.path.join(output_dir, 'dwell_time_histogram.pdf'))
+    plt.close(fig)
 
+    # -----------------------------
+    # Per-entry-type pre/post histograms
+    # -----------------------------
+    print('\n=== Pre/post-window histograms (per entry type) ===')
+    metrics = [
+        ('prev_run_dur', 'Prior-state dwell (= available pre, s)'),
+        ('new_run_dur',  'New-state dwell (= available post, s)'),
+        ('max_pre',      'Max pre to trial start (s)'),
+        ('max_post',     'Max post to trial end (s)'),
+    ]
+    fig, axes = plt.subplots(len(metrics), len(ENTRY_TYPES), figsize=(20, 14))
+    for col, et in enumerate(ENTRY_TYPES.values()):
+        for row, (metric, label) in enumerate(metrics):
+            ax = axes[row, col]
+            d = np.array(entry_metadata[et][metric])
+            if d.size:
+                ax.hist(d, bins=60, range=(0, 5.0), color='steelblue',
+                        edgecolor='k', linewidth=0.4)
+                med = np.median(d)
+                p10, p90 = np.percentile(d, [10, 90])
+                ax.axvline(med, color='red', linestyle='--', lw=1)
+                ax.axvline(p10, color='orange', linestyle=':', lw=0.8)
+                ax.axvline(p90, color='orange', linestyle=':', lw=0.8)
+                stat_txt = (f'n={d.size}\nmed={med*1000:.0f} ms\n'
+                            f'p10={p10*1000:.0f} ms\np90={p90*1000:.0f} ms')
+                ax.text(0.98, 0.97, stat_txt, transform=ax.transAxes,
+                        ha='right', va='top', fontsize=7,
+                        bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='gray', alpha=0.85))
+            if row == 0:
+                ax.set_title(et, fontsize=10)
+            if col == 0:
+                ax.set_ylabel(label, fontsize=9)
+            ax.set_xlabel('Time (s)', fontsize=8)
+    fig.suptitle('Available pre/post per entry type (red=median, orange=10/90th pctile)',
+                 fontsize=11, y=1.00)
+    plt.tight_layout()
+    fig.savefig(os.path.join(output_dir, 'entry_window_histograms.pdf'))
+    plt.close(fig)
 
-# -----------------------------
-# Per-entry-type pre/post histograms
-# -----------------------------
-# 4 metrics × 4 entry types. Rows = metric, cols = entry type.
-print('\n=== Pre/post-window histograms (per entry type) ===')
-metrics = [
-    ('prev_run_dur', 'Prior-state dwell (= available pre, s)'),
-    ('new_run_dur',  'New-state dwell (= available post, s)'),
-    ('max_pre',      'Max pre to trial start (s)'),
-    ('max_post',     'Max post to trial end (s)'),
-]
-fig, axes = plt.subplots(len(metrics), len(ENTRY_TYPES), figsize=(20, 14))
-for col, et in enumerate(ENTRY_TYPES.values()):
-    for row, (metric, label) in enumerate(metrics):
-        ax = axes[row, col]
-        d = np.array(entry_metadata[et][metric])
-        if d.size:
-            ax.hist(d, bins=60, range=(0, 5.0), color='steelblue',
-                    edgecolor='k', linewidth=0.4)
-            med = np.median(d)
-            p10, p90 = np.percentile(d, [10, 90])
-            ax.axvline(med, color='red', linestyle='--', lw=1)
-            ax.axvline(p10, color='orange', linestyle=':', lw=0.8)
-            ax.axvline(p90, color='orange', linestyle=':', lw=0.8)
-            stat_txt = (f'n={d.size}\nmed={med*1000:.0f} ms\n'
-                        f'p10={p10*1000:.0f} ms\np90={p90*1000:.0f} ms')
-            ax.text(0.98, 0.97, stat_txt, transform=ax.transAxes,
-                    ha='right', va='top', fontsize=7,
-                    bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='gray', alpha=0.85))
-        if row == 0:
-            ax.set_title(et, fontsize=10)
-        if col == 0:
-            ax.set_ylabel(label, fontsize=9)
-        ax.set_xlabel('Time (s)', fontsize=8)
-fig.suptitle('Available pre/post per entry type (red=median, orange=10/90th pctile)',
-             fontsize=11, y=1.00)
-plt.tight_layout()
-fig.savefig(os.path.join(output_dir, 'entry_window_histograms.pdf'))
-plt.close(fig)
-
-# Save raw arrays for downstream use
-np.savez_compressed(
-    os.path.join(results_data_dir, 'entry_window_metadata.npz'),
-    **{f'{et}__{m}': np.array(entry_metadata[et][m])
-       for et in ENTRY_TYPES.values() for m, _ in metrics},
-    n_entries_total=np.array([n_entries_total[et] for et in ENTRY_TYPES.values()]),
-    entry_types=np.array(list(ENTRY_TYPES.values())),
-)
-print(f'  Saved → {output_dir}/entry_window_histograms.pdf')
-
-if STOP_AFTER_HISTOGRAMS:
-    print('\nSTOP_AFTER_HISTOGRAMS=True → exiting before epoch extraction. '
-          'Set to False once you have chosen PRE/POST.')
-    sys.exit(0)
+    np.savez_compressed(
+        os.path.join(results_data_dir, 'entry_window_metadata.npz'),
+        **{f'{et}__{m}': np.array(entry_metadata[et][m])
+           for et in ENTRY_TYPES.values() for m, _ in metrics},
+        n_entries_total=np.array([n_entries_total[et] for et in ENTRY_TYPES.values()]),
+        entry_types=np.array(list(ENTRY_TYPES.values())),
+    )
+    np.savez_compressed(
+        os.path.join(results_data_dir, 'dwell_durations.npz'),
+        target_in     = np.array(dwell_durations[1]),
+        distractor_in = np.array(dwell_durations[2]),
+        background    = np.array(dwell_durations[0]),
+    )
+    print(f'  Histograms saved → {output_dir}')
 
 if not session_epochs:
     raise RuntimeError('No sessions processed for epoch extraction.')
-
-np.savez_compressed(
-    os.path.join(results_data_dir, 'dwell_durations.npz'),
-    target_in     = np.array(dwell_durations[1]),
-    distractor_in = np.array(dwell_durations[2]),
-    neither       = np.array(dwell_durations[0]),
-)
-print('  Saved dwell-time histogram and raw durations.')
 
 
 # -----------------------------
@@ -623,8 +603,15 @@ for (l1, l2) in pairs:
                     n1=d1.shape[0], n2=d2.shape[0],
                     ch_name=ch_name, array_index=i_arr+1)
 
-            ax.plot(x_axis, diff, color='k', lw=0.8)
-            ax.fill_between(x_axis, diff, where=sig, color='red', alpha=0.4)
+            m1 = np.nanmean(d1, axis=0)
+            m2 = np.nanmean(d2, axis=0)
+            ax.plot(x_axis, m1, color=(0.55, 0.0, 0.55), lw=0.8, label=l1)
+            ax.plot(x_axis, m2, color=(0.0, 0.39, 0.39), lw=0.8, label=l2)
+            ylo, yhi = ax.get_ylim()
+            if sig.any():
+                ax.fill_between(x_axis, ylo, yhi, where=sig,
+                                color='#8dd3c7', alpha=0.4, zorder=0)
+                ax.set_ylim(ylo, yhi)
             ax.axhline(0, color='gray', lw=0.5)
             ax.axvline(0, color='gray', lw=0.5, linestyle=':')
             ax.set_title(f'{ch_name} (n={d1.shape[0]}/{d2.shape[0]})', fontsize=6)
@@ -642,14 +629,22 @@ for (l1, l2) in pairs:
         if d1a is None or d2a is None or d1a.shape[0] < 2 or d2a.shape[0] < 2:
             continue
         diff_a, sig_a, thr_a = permutation_test(d1a, d2a, n_perms=n_perms, alpha=alpha, rng=rng)
+        m1a = np.nanmean(d1a, axis=0)
+        m2a = np.nanmean(d2a, axis=0)
         fig_a, ax_a = plt.subplots(figsize=(6, 4))
-        ax_a.plot(x_axis, diff_a, color='k', lw=1.5)
-        ax_a.fill_between(x_axis, diff_a, where=sig_a, color='red', alpha=0.4)
+        ax_a.plot(x_axis, m1a, color=(0.55, 0.0, 0.55), lw=1.5, label=l1)
+        ax_a.plot(x_axis, m2a, color=(0.0, 0.39, 0.39), lw=1.5, label=l2)
+        ylo, yhi = ax_a.get_ylim()
+        if sig_a.any():
+            ax_a.fill_between(x_axis, ylo, yhi, where=sig_a,
+                              color='#8dd3c7', alpha=0.4, zorder=0)
+            ax_a.set_ylim(ylo, yhi)
         ax_a.axhline(0, color='gray', lw=0.8)
         ax_a.axvline(0, color='gray', lw=0.8, linestyle=':')
         ax_a.set_title(f'Array {i_arr+1}  {l1} vs {l2}')
         ax_a.set_xlabel('Time from RF entry (s)')
-        ax_a.set_ylabel('ΔAmplitude')
+        ax_a.set_ylabel('Amplitude')
+        ax_a.legend(fontsize=8)
         plt.tight_layout()
         fig_a.savefig(os.path.join(
             output_dir, f'perm_entry_pair_{l1}_VS_{l2}_ARRAYCOMBINED_array{i_arr+1}.pdf'))
@@ -686,16 +681,24 @@ for (l1, l2) in pairs:
         if d1a is None or d2a is None or d1a.shape[0] < 2 or d2a.shape[0] < 2:
             continue
         diff_a, sig_a, thr_a = permutation_test(d1a, d2a, n_perms=n_perms, alpha=alpha, rng=rng)
+        m1a = np.nanmean(d1a, axis=0)
+        m2a = np.nanmean(d2a, axis=0)
 
         array_label = f'Array {i_arr+1}' if i_arr >= 3 else 'Array 13'
         fig_a, ax_a = plt.subplots(figsize=(6, 4))
-        ax_a.plot(x_axis, diff_a, color='k', lw=1.5)
-        ax_a.fill_between(x_axis, diff_a, where=sig_a, color='red', alpha=0.4)
+        ax_a.plot(x_axis, m1a, color=(0.55, 0.0, 0.55), lw=1.5, label=l1)
+        ax_a.plot(x_axis, m2a, color=(0.0, 0.39, 0.39), lw=1.5, label=l2)
+        ylo, yhi = ax_a.get_ylim()
+        if sig_a.any():
+            ax_a.fill_between(x_axis, ylo, yhi, where=sig_a,
+                              color='#8dd3c7', alpha=0.4, zorder=0)
+            ax_a.set_ylim(ylo, yhi)
         ax_a.axhline(0, color='gray', lw=0.8)
         ax_a.axvline(0, color='gray', lw=0.8, linestyle=':')
         ax_a.set_title(f'{array_label}  {l1} vs {l2}')
         ax_a.set_xlabel('Time from RF entry (s)')
-        ax_a.set_ylabel('ΔAmplitude')
+        ax_a.set_ylabel('Amplitude')
+        ax_a.legend(fontsize=8)
         plt.tight_layout()
         fig_a.savefig(os.path.join(
             output_dir,
@@ -714,3 +717,78 @@ for (l1, l2) in pairs:
                 array_index=i_arr+1)
 
 print(f'\nDone. Plots → {output_dir}\n        Stats → {results_data_dir}')
+
+
+# -----------------------------
+# Summary ERP figure: actual LFP traces with significance
+# (target_from_background vs distractor_from_background, arrays 1-6)
+# Loads from existing npz files — no recomputation needed.
+# -----------------------------
+from matplotlib.backends.backend_pdf import PdfPages
+import glob
+
+print('\n=== Generating per-channel ERP summary '
+      '(target_from_background vs distractor_from_background) ===')
+
+l1_summary = 'target_from_background'
+l2_summary = 'distractor_from_background'
+sig_color = '#8dd3c7'
+
+erp_summary_path = os.path.join(
+    output_dir, 'erp_summary_target_vs_distractor_from_background.pdf')
+
+with PdfPages(erp_summary_path) as pdf:
+    for i_arr in range(6):
+        pattern = os.path.join(
+            results_data_dir,
+            f'permdata_pair_{l1_summary}_VS_{l2_summary}_array{i_arr+1}_*.npz')
+        ch_files = sorted(glob.glob(pattern))
+        if not ch_files:
+            continue
+
+        n_ch = len(ch_files)
+        ncols = 6
+        nrows = int(np.ceil(n_ch / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
+                                 sharex=True)
+        axes = np.atleast_2d(axes).flatten()
+
+        for ic, fpath in enumerate(ch_files):
+            ax = axes[ic]
+            d = np.load(fpath)
+            x = d['x_axis']
+            m1, m2 = d['mean1'], d['mean2']
+            sig = d['sig']
+            ch_name = str(d['ch_name'])
+            n1, n2 = int(d['n1']), int(d['n2'])
+
+            ax.plot(x, m1, color=(0.55, 0.0, 0.55), lw=0.9,
+                    label=l1_summary)
+            ax.plot(x, m2, color=(0.0, 0.39, 0.39), lw=0.9,
+                    label=l2_summary)
+            ylo, yhi = ax.get_ylim()
+            if sig.any():
+                ax.fill_between(x, ylo, yhi, where=sig,
+                                color=sig_color, alpha=0.4, zorder=0)
+                ax.set_ylim(ylo, yhi)
+            ax.axhline(0, color='gray', lw=0.4)
+            ax.axvline(0, color='gray', lw=0.6, linestyle=':')
+            ax.set_title(f'{ch_name} (n={n1}/{n2})', fontsize=7)
+            if ic == 0:
+                ax.legend(fontsize=6)
+
+        for j in range(n_ch, len(axes)):
+            axes[j].set_visible(False)
+
+        fig.suptitle(
+            f'Array {i_arr+1}: {l1_summary} vs {l2_summary}  '
+            f'(green = sig, {n_ch} channels)',
+            fontsize=11)
+        fig.supxlabel('Time from RF entry (s)', fontsize=10)
+        fig.supylabel('Amplitude', fontsize=10)
+        plt.tight_layout(rect=[0.02, 0.02, 1, 0.95])
+        pdf.savefig(fig)
+        plt.close(fig)
+        print(f'  Array {i_arr+1}: {n_ch} channels')
+
+print(f'  Saved → {erp_summary_path}')

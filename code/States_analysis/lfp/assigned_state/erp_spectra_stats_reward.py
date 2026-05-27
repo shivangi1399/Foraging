@@ -97,7 +97,10 @@ rng = np.random.default_rng(42)
 # the per-group eventmarker filtering. The main LFP/permutation pipeline below
 # runs independently of this flag, so you can set this to False and only run
 # the main analysis (or vice versa).
-run_diagnostic = True
+run_diagnostic = False
+
+# When True: only include correct trials (ResponseCorrect, no block-exit).
+correct_only = True
 
 # Groups of trials to compare by their reward - walkthrough diff (seconds).
 # Each entry: 'group_label': (low, high) inclusive-low, exclusive-high.
@@ -225,7 +228,8 @@ def get_reward_walkthrough_diffs_from_log(session_name):
 def get_correct_trial_mask_from_log(session_name):
     """
     Per-log-trial boolean: True if event 1 (ResponseCorrect) occurs in the
-    trial's [stim_onset, trial_end] window. Matches the convention used in
+    trial's [stim_onset, trial_end] window AND the trial is not a block-exit
+    trial (event 3091). Matches the correct_mask convention used in
     RF_inout_channel_raster.py.
     """
     log_path = os.path.join(eye_data_dir, session_name, session_logfiles[session_name])
@@ -235,9 +239,21 @@ def get_correct_trial_mask_from_log(session_name):
     target_onset = ts[np.where(evt == 3011)[0]]
     trial_end_ts = ts[np.where(evt == 3090)[0]]
     response_correct_ts = ts[np.where(evt == 1)[0]]
+    block_exit_ts = ts[np.where(evt == 3091)[0]]
     n_log_trials = len(target_onset)
+
+    # Block-exit per trial: each 3091 maps to the trial whose stim onset most
+    # recently preceded it (same logic as RF_inout_channel_raster.py).
+    has_block_exit = np.zeros(n_log_trials, dtype=bool)
+    for t_exit in block_exit_ts:
+        idx = np.searchsorted(target_onset, t_exit, side='right') - 1
+        if 0 <= idx < n_log_trials:
+            has_block_exit[idx] = True
+
     mask = np.zeros(n_log_trials, dtype=bool)
     for trl in range(n_log_trials):
+        if has_block_exit[trl]:
+            continue
         t0 = target_onset[trl]
         t1 = trial_end_ts[trl] if trl < len(trial_end_ts) else t0 + 5.0
         if np.any((response_correct_ts >= t0) & (response_correct_ts <= t1)):
@@ -1283,415 +1299,422 @@ print(f"Summary plots saved under {summary_output_dir}")
 # Saves plots under .../reward_aligned/correct_trials/. The all-trials
 # analysis above is unaffected.
 
-print("\n###### Building correct-trials-only stores for array-level analysis ######")
+def run_correct_trials_analysis():
+    print("\n###### Building correct-trials-only stores for array-level analysis ######")
 
-correct_output_dir = (
-    '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/'
-    'reward_aligned/correct_trials'
-)
-correct_results_dir = os.path.join(
-    results_dir, 'reward_aligned', 'correct_trials'
-)
-os.makedirs(correct_output_dir, exist_ok=True)
-os.makedirs(correct_results_dir, exist_ok=True)
-
-state_data_timelock_corr = {}
-state_data_spectra_corr = {}
-state_data_residuals_corr = {}
-
-for session_name in sessions:
-    print(f"\n=== [correct] Processing session {session_name} ===")
-    lfp_path = os.path.join(lfp_data_dir, session_name, 'Cleaned_lfp_FT.spy')
-    trial_info_path = os.path.join(trial_info_dir, session_name, 'Trial_Info.pkl')
-    log_path = os.path.join(eye_data_dir, session_name, session_logfiles[session_name])
-
-    if not (os.path.exists(lfp_path) and os.path.exists(trial_info_path)
-            and os.path.exists(log_path)):
-        print(f"  Missing files for {session_name}, skipping")
-        continue
-
-    reward_times = get_reward_times_from_log(session_name)
-    correct_mask_log = get_correct_trial_mask_from_log(session_name)
-    print(f"  Log: {correct_mask_log.sum()} correct trials "
-          f"(of {len(correct_mask_log)} log trials)")
-
-    predicted_states = session_to_probs[session_name]
-    trial_info_df = pd.read_pickle(trial_info_path)
-    trial_info_df.iloc[:, 0] = (trial_info_df.iloc[:, 0] - 1000).astype('Int64')
-    n_states_avail = len(predicted_states)
-    n_rew_avail = min(n_states_avail, len(reward_times))
-    stim_df = pd.DataFrame({
-        'TrialIndex': np.arange(n_states_avail),
-        'States': predicted_states,
-        'RewardTime': np.concatenate([
-            reward_times[:n_rew_avail],
-            np.full(n_states_avail - n_rew_avail, np.nan)
-        ]) if n_rew_avail < n_states_avail else reward_times[:n_states_avail]
-    })
-    combined_df = pd.merge(trial_info_df, stim_df,
-                           left_on='Trial_Number', right_on='TrialIndex', how='inner')
-
-    # Keep only correct trials
-    correct_log_indices = np.where(correct_mask_log)[0]
-    combined_df = combined_df[combined_df['TrialIndex'].isin(correct_log_indices)]
-    print(f"  Correct trials after state/info merge: {len(combined_df)}")
-
-    datalfp = spy.load(lfp_path)
-    ensure_trialindex_in_trialdefinition(datalfp)
-    fs = datalfp.samplerate
-    all_channels = list(datalfp.channel)
-
-    lfp_trial_indices = datalfp.trialdefinition[:, 3].astype(int)
-    states_trial_info_filt = combined_df[combined_df['TrialIndex'].isin(lfp_trial_indices)]
-    unique_states = np.sort(np.unique(
-        states_trial_info_filt['States'].to_numpy()))[:N_STATES_TO_USE]
-
-    for state_value in unique_states:
-        state_trials = states_trial_info_filt[
-            states_trial_info_filt['States'] == state_value]
-
-        rew_centered_trials = []
-        for _, row in state_trials.iterrows():
-            trial_idx = row['TrialIndex']
-            rew = row['RewardTime']
-            if rew is None or (isinstance(rew, float) and np.isnan(rew)):
-                continue
-            lfp_trial_pos = np.where(lfp_trial_indices == trial_idx)[0]
-            if len(lfp_trial_pos) == 0:
-                continue
-            lfp_trial_pos = lfp_trial_pos[0]
-            trial_data = datalfp.trials[lfp_trial_pos]
-            trial_time = datalfp.time[lfp_trial_pos]
-            if np.all(np.isnan(trial_data)):
-                continue
-            t_start = rew - pre_rew
-            t_end = rew + post_rew
-            time_mask = (trial_time >= t_start) & (trial_time <= t_end)
-            if np.sum(time_mask) < 10:
-                continue
-            rew_centered_trials.append(trial_data[time_mask, :])
-
-        if not rew_centered_trials:
+    correct_output_dir = (
+        '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/'
+        'reward_aligned/correct_trials'
+    )
+    correct_results_dir = os.path.join(
+        results_dir, 'reward_aligned', 'correct_trials'
+    )
+    os.makedirs(correct_output_dir, exist_ok=True)
+    os.makedirs(correct_results_dir, exist_ok=True)
+    
+    state_data_timelock_corr = {}
+    state_data_spectra_corr = {}
+    state_data_residuals_corr = {}
+    
+    for session_name in sessions:
+        print(f"\n=== [correct] Processing session {session_name} ===")
+        lfp_path = os.path.join(lfp_data_dir, session_name, 'Cleaned_lfp_FT.spy')
+        trial_info_path = os.path.join(trial_info_dir, session_name, 'Trial_Info.pkl')
+        log_path = os.path.join(eye_data_dir, session_name, session_logfiles[session_name])
+    
+        if not (os.path.exists(lfp_path) and os.path.exists(trial_info_path)
+                and os.path.exists(log_path)):
+            print(f"  Missing files for {session_name}, skipping")
             continue
-        expected_len = int(np.round((pre_rew + post_rew) * fs))
-        rew_centered_trials = [seg[:expected_len, :] for seg in rew_centered_trials
-                               if seg.shape[0] >= expected_len]
-        if not rew_centered_trials:
-            continue
-        trials_array = np.stack(rew_centered_trials, axis=0)
-        time_vec = np.linspace(-pre_rew, post_rew, expected_len)
-
-        valid_ch_mask = ~np.all(np.isnan(trials_array), axis=(0, 1))
-        valid_ch_idx = np.where(valid_ch_mask)[0]
-        if len(valid_ch_idx) == 0:
-            continue
-        trials_array = trials_array[:, :, valid_ch_idx]
-        valid_channels = [all_channels[i] for i in valid_ch_idx]
-
-        trial_mask = ~np.all(np.isnan(trials_array), axis=(1, 2))
-        trials_array = trials_array[trial_mask]
-        if trials_array.shape[0] == 0:
-            continue
-
-        print(f"  [correct] State {state_value}: {trials_array.shape[0]} trials, "
-              f"{len(valid_channels)} channels")
-
-        power_trials, freqs_combined = compute_spectrum_trials(trials_array, fs)
-
-        mean_spec = np.nanmean(power_trials, axis=0)
-        resid_session = np.full_like(mean_spec, np.nan)
-        freq_res = np.median(np.diff(freqs_combined))
-        for ch_i, ch_name in enumerate(valid_channels):
-            try:
-                lower_pw = max(2 * freq_res, 1.0)
-                upper_pw = 12
-                if lower_pw >= upper_pw:
+    
+        reward_times = get_reward_times_from_log(session_name)
+        correct_mask_log = get_correct_trial_mask_from_log(session_name)
+        print(f"  Log: {correct_mask_log.sum()} correct trials "
+              f"(of {len(correct_mask_log)} log trials)")
+    
+        predicted_states = session_to_probs[session_name]
+        trial_info_df = pd.read_pickle(trial_info_path)
+        trial_info_df.iloc[:, 0] = (trial_info_df.iloc[:, 0] - 1000).astype('Int64')
+        n_states_avail = len(predicted_states)
+        n_rew_avail = min(n_states_avail, len(reward_times))
+        stim_df = pd.DataFrame({
+            'TrialIndex': np.arange(n_states_avail),
+            'States': predicted_states,
+            'RewardTime': np.concatenate([
+                reward_times[:n_rew_avail],
+                np.full(n_states_avail - n_rew_avail, np.nan)
+            ]) if n_rew_avail < n_states_avail else reward_times[:n_states_avail]
+        })
+        combined_df = pd.merge(trial_info_df, stim_df,
+                               left_on='Trial_Number', right_on='TrialIndex', how='inner')
+    
+        # Keep only correct trials
+        correct_log_indices = np.where(correct_mask_log)[0]
+        combined_df = combined_df[combined_df['TrialIndex'].isin(correct_log_indices)]
+        print(f"  Correct trials after state/info merge: {len(combined_df)}")
+    
+        datalfp = spy.load(lfp_path)
+        ensure_trialindex_in_trialdefinition(datalfp)
+        fs = datalfp.samplerate
+        all_channels = list(datalfp.channel)
+    
+        lfp_trial_indices = datalfp.trialdefinition[:, 3].astype(int)
+        states_trial_info_filt = combined_df[combined_df['TrialIndex'].isin(lfp_trial_indices)]
+        unique_states = np.sort(np.unique(
+            states_trial_info_filt['States'].to_numpy()))[:N_STATES_TO_USE]
+    
+        for state_value in unique_states:
+            state_trials = states_trial_info_filt[
+                states_trial_info_filt['States'] == state_value]
+    
+            rew_centered_trials = []
+            for _, row in state_trials.iterrows():
+                trial_idx = row['TrialIndex']
+                rew = row['RewardTime']
+                if rew is None or (isinstance(rew, float) and np.isnan(rew)):
                     continue
-                fm = FOOOF(peak_width_limits=[lower_pw, upper_pw],
-                           max_n_peaks=6, min_peak_height=0.05,
-                           peak_threshold=1.5, aperiodic_mode='fixed')
-                fm.fit(freqs_combined, mean_spec[:, ch_i])
-                resid_session[:, ch_i] = fm._spectrum_flat
-            except Exception as e:
-                print(f"  [correct] FOOOF failed {session_name}, ch {ch_name}: {e}")
-
-        for dct, data_in, xaxis in [
-            (state_data_timelock_corr, trials_array, time_vec),
-            (state_data_spectra_corr, power_trials, freqs_combined),
-        ]:
-            if state_value not in dct:
-                dct[state_value] = []
-            dct[state_value].append(
-                {'trials': data_in, 'time': xaxis, 'channels': valid_channels})
-        if state_value not in state_data_residuals_corr:
-            state_data_residuals_corr[state_value] = []
-        state_data_residuals_corr[state_value].append(
-            {'resid': resid_session, 'freqs': freqs_combined,
-             'channels': valid_channels})
-
-
-print("\n=== [correct] Array-level permutation tests ===")
-pairs_corr = list(itertools.combinations(sorted(state_data_timelock_corr.keys()), 2))
-
-
-def _array_perm_save_npz(store, plot_type, ch_names_used, s1, s2, array_label,
-                         array_index, out_data_dir, npz_prefix):
-    """Run array-level perm test on the given channel set and save the npz
-    cache only (no per-array PDF)."""
-    vals1, vals2 = [], []
-    x_axis = None
-    for sess in store[s1]:
-        ch_valid = [c for c in ch_names_used if c in sess['channels']]
-        if not ch_valid:
-            continue
-        ch_idx = [sess['channels'].index(c) for c in ch_valid]
-        x_axis = sess['time'] if plot_type != 'residual' else sess['freqs']
-        if plot_type == 'residual':
-            vals1.append(np.mean(sess['resid'][:, ch_idx], axis=1))
-        else:
-            vals1.append(np.mean(np.mean(sess['trials'][:, :, ch_idx], axis=0), axis=1))
-    for sess in store[s2]:
-        ch_valid = [c for c in ch_names_used if c in sess['channels']]
-        if not ch_valid:
-            continue
-        ch_idx = [sess['channels'].index(c) for c in ch_valid]
-        x_axis = sess['time'] if plot_type != 'residual' else sess['freqs']
-        if plot_type == 'residual':
-            vals2.append(np.mean(sess['resid'][:, ch_idx], axis=1))
-        else:
-            vals2.append(np.mean(np.mean(sess['trials'][:, :, ch_idx], axis=0), axis=1))
-    if not (vals1 and vals2):
-        return
-    min_samples = min(v.shape[0] for v in vals1 + vals2)
-    vals1 = [v[:min_samples] for v in vals1]
-    vals2 = [v[:min_samples] for v in vals2]
-    x_axis = x_axis[:min_samples]
-    data1 = np.stack(vals1, axis=0)
-    data2 = np.stack(vals2, axis=0)
-    diff, sig, thr = permutation_test(
-        data1, data2, n_perms=n_perms, alpha=alpha, rng=rng)
-
-    npz_name = (f"{npz_prefix}_{plot_type}_pair{s1}_{s2}"
-                f"_{array_label.replace('-', '').replace(' ', '')}.npz")
-    npz_path = os.path.join(out_data_dir, npz_name)
-    if not os.path.exists(npz_path):
-        np.savez_compressed(
-            npz_path,
-            diff=diff, sig=sig, thr=thr,
-            mean1=np.nanmean(data1, axis=0),
-            mean2=np.nanmean(data2, axis=0),
-            x_axis=x_axis, s1=s1, s2=s2, plot_type=plot_type,
-            array_index=array_index)
-
-
-for plot_type, store in [('timelock', state_data_timelock_corr),
-                         ('spectra', state_data_spectra_corr),
-                         ('residual', state_data_residuals_corr)]:
-    if not store:
-        continue
-    first_channels = store[next(iter(store))][0]['channels']
-    Sig_CH = np.array_split(first_channels, 6)
-
-    for (s1, s2) in pairs_corr:
-        print(f"  --> {plot_type}: state {s1} vs {s2}")
-
-        # Per-array (1..6) -> permdata_ARRAY_*.npz (consumed by Figure 1 + Figure 2)
-        for i_arr, ch_names in enumerate(Sig_CH):
-            _array_perm_save_npz(
-                store, plot_type, ch_names, s1, s2,
-                array_label=f"array{i_arr+1}", array_index=i_arr + 1,
-                out_data_dir=correct_results_dir,
-                npz_prefix='permdata_ARRAY')
-
-        # Merged: Array 1-3 + individual arrays 4/5/6 -> cb_permdata_*.npz (Figure 3)
-        for i_arr, ch_names in enumerate(Sig_CH):
-            if i_arr < 3:
-                if i_arr == 0:
-                    combined_ch_names = np.concatenate(Sig_CH[:3])
-                    array_label = "Array 1-3"
-                else:
+                lfp_trial_pos = np.where(lfp_trial_indices == trial_idx)[0]
+                if len(lfp_trial_pos) == 0:
                     continue
+                lfp_trial_pos = lfp_trial_pos[0]
+                trial_data = datalfp.trials[lfp_trial_pos]
+                trial_time = datalfp.time[lfp_trial_pos]
+                if np.all(np.isnan(trial_data)):
+                    continue
+                t_start = rew - pre_rew
+                t_end = rew + post_rew
+                time_mask = (trial_time >= t_start) & (trial_time <= t_end)
+                if np.sum(time_mask) < 10:
+                    continue
+                rew_centered_trials.append(trial_data[time_mask, :])
+    
+            if not rew_centered_trials:
+                continue
+            expected_len = int(np.round((pre_rew + post_rew) * fs))
+            rew_centered_trials = [seg[:expected_len, :] for seg in rew_centered_trials
+                                   if seg.shape[0] >= expected_len]
+            if not rew_centered_trials:
+                continue
+            trials_array = np.stack(rew_centered_trials, axis=0)
+            time_vec = np.linspace(-pre_rew, post_rew, expected_len)
+    
+            valid_ch_mask = ~np.all(np.isnan(trials_array), axis=(0, 1))
+            valid_ch_idx = np.where(valid_ch_mask)[0]
+            if len(valid_ch_idx) == 0:
+                continue
+            trials_array = trials_array[:, :, valid_ch_idx]
+            valid_channels = [all_channels[i] for i in valid_ch_idx]
+    
+            trial_mask = ~np.all(np.isnan(trials_array), axis=(1, 2))
+            trials_array = trials_array[trial_mask]
+            if trials_array.shape[0] == 0:
+                continue
+    
+            print(f"  [correct] State {state_value}: {trials_array.shape[0]} trials, "
+                  f"{len(valid_channels)} channels")
+    
+            power_trials, freqs_combined = compute_spectrum_trials(trials_array, fs)
+    
+            mean_spec = np.nanmean(power_trials, axis=0)
+            resid_session = np.full_like(mean_spec, np.nan)
+            freq_res = np.median(np.diff(freqs_combined))
+            for ch_i, ch_name in enumerate(valid_channels):
+                try:
+                    lower_pw = max(2 * freq_res, 1.0)
+                    upper_pw = 12
+                    if lower_pw >= upper_pw:
+                        continue
+                    fm = FOOOF(peak_width_limits=[lower_pw, upper_pw],
+                               max_n_peaks=6, min_peak_height=0.05,
+                               peak_threshold=1.5, aperiodic_mode='fixed')
+                    fm.fit(freqs_combined, mean_spec[:, ch_i])
+                    resid_session[:, ch_i] = fm._spectrum_flat
+                except Exception as e:
+                    print(f"  [correct] FOOOF failed {session_name}, ch {ch_name}: {e}")
+    
+            for dct, data_in, xaxis in [
+                (state_data_timelock_corr, trials_array, time_vec),
+                (state_data_spectra_corr, power_trials, freqs_combined),
+            ]:
+                if state_value not in dct:
+                    dct[state_value] = []
+                dct[state_value].append(
+                    {'trials': data_in, 'time': xaxis, 'channels': valid_channels})
+            if state_value not in state_data_residuals_corr:
+                state_data_residuals_corr[state_value] = []
+            state_data_residuals_corr[state_value].append(
+                {'resid': resid_session, 'freqs': freqs_combined,
+                 'channels': valid_channels})
+    
+    
+    print("\n=== [correct] Array-level permutation tests ===")
+    pairs_corr = list(itertools.combinations(sorted(state_data_timelock_corr.keys()), 2))
+    
+    
+    def _array_perm_save_npz(store, plot_type, ch_names_used, s1, s2,
+                             array_index, npz_path):
+        """Run array-level perm test on the given channel set and save the npz
+        cache only (no per-array PDF). Mirrors the array-level computation in
+        the all-trials block above."""
+        vals1, vals2 = [], []
+        x_axis = None
+        for sess in store[s1]:
+            ch_valid = [c for c in ch_names_used if c in sess['channels']]
+            if not ch_valid:
+                continue
+            ch_idx = [sess['channels'].index(c) for c in ch_valid]
+            x_axis = sess['time'] if plot_type != 'residual' else sess['freqs']
+            if plot_type == 'residual':
+                vals1.append(np.mean(sess['resid'][:, ch_idx], axis=1))
             else:
-                combined_ch_names = ch_names
-                array_label = f"Array {i_arr+1}"
-            _array_perm_save_npz(
-                store, plot_type, combined_ch_names, s1, s2,
-                array_label=array_label, array_index=i_arr + 1,
-                out_data_dir=correct_results_dir,
-                npz_prefix='cb_permdata')
-
-
-# -----------------------------
-# Summary figures (correct trials, array-level only)
-# -----------------------------
-correct_summary_dir = os.path.join(correct_output_dir, 'summary_plots')
-os.makedirs(correct_summary_dir, exist_ok=True)
-
-
-def load_permdata_correct(plot_type, s1, s2, array_index):
-    fname = f"permdata_ARRAY_{plot_type}_pair{s1}_{s2}_array{array_index}.npz"
-    fpath = os.path.join(correct_results_dir, fname)
-    if not os.path.exists(fpath):
-        return None
-    return np.load(fpath)
-
-
-def load_permdata_merged_correct(plot_type, s1, s2, array_label):
-    fname = (f"cb_permdata_{plot_type}_pair{s1}_{s2}"
-             f"_{array_label.replace('-', '').replace(' ', '')}.npz")
-    fpath = os.path.join(correct_results_dir, fname)
-    if not os.path.exists(fpath):
-        return None
-    return np.load(fpath)
-
-
-pairs_fig_corr = list(itertools.combinations(
-    [s for s in sorted(state_data_timelock_corr.keys()) if s != 1], 2))
-
-# Figure 1: per-array grid (rows = arrays, cols = state pairs)
-for plot_type in plot_types_fig:
-    ylabel = 'Amplitude' if plot_type == 'timelock' else 'Residual Power'
-    n_rows, n_cols = len(arrays_list), len(pairs_fig_corr)
-    if n_cols == 0:
-        continue
-
-    fig_real, axes_real = plt.subplots(n_rows, n_cols,
-                                       figsize=(6*n_cols, 3*n_rows),
-                                       sharex='col', sharey='row')
-    if n_rows == 1: axes_real = np.expand_dims(axes_real, 0)
-    if n_cols == 1: axes_real = np.expand_dims(axes_real, 1)
-
-    summary_mask = []
-    x_axis = None
-    for i_array, array_index in enumerate(arrays_list):
-        summary_mask_array = []
-        for j_pair, (s1, s2) in enumerate(pairs_fig_corr):
-            ax = axes_real[i_array, j_pair]
-            perm_array = load_permdata_correct(plot_type, s1, s2, array_index)
-            if perm_array is None:
-                ax.axis('off')
-                summary_mask_array.append(None)
+                vals1.append(np.mean(np.mean(sess['trials'][:, :, ch_idx], axis=0), axis=1))
+        for sess in store[s2]:
+            ch_valid = [c for c in ch_names_used if c in sess['channels']]
+            if not ch_valid:
                 continue
-
-            x_axis = perm_array['x_axis']
-            data1, data2 = perm_array['mean1'], perm_array['mean2']
-            sig_mask = perm_array['sig']
-
-            ax.plot(x_axis, data1, color=state_colors[s1], label=f"State {s1}")
-            ax.plot(x_axis, data2, color=state_colors[s2], label=f"State {s2}")
-            if plot_type == 'timelock':
-                ax.set_ylim(-15, 15)
-            ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1],
-                            where=sig_mask, color=sig_color, alpha=0.4)
-
-            if i_array == 0: ax.set_title(f"{s1} vs {s2}", fontsize=10)
-            if j_pair == 0: ax.set_ylabel(f"Array {array_index}\n{ylabel}")
-            if i_array == n_rows - 1:
-                xlabel = ('Time rel. reward (s)' if plot_type == 'timelock'
-                          else 'Frequency (Hz)')
-                ax.set_xlabel(xlabel)
-            ax.legend(fontsize=6)
-
-            summary_mask_array.append(sig_mask)
-        summary_mask.append(summary_mask_array)
-
-    plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.08,
-                        wspace=0.25, hspace=0.25)
-    plt.suptitle(
-        f"{plot_type} - Mean across all sessions (reward-centered, correct only)",
-        fontsize=14)
-    plt.savefig(os.path.join(correct_summary_dir,
-                             f"{plot_type}_all_arrays_pairs.pdf"))
-    plt.close()
-
-    # Figure 2: pairwise significance heatmap
-    if x_axis is not None:
-        n_arrays_fig = len(arrays_list)
-        n_pairs_fig = len(pairs_fig_corr)
-        n_time = len(x_axis)
-        summary_array = np.zeros((n_arrays_fig, n_pairs_fig, n_time), dtype=int)
-        for i_array in range(n_arrays_fig):
-            for j_pair in range(n_pairs_fig):
-                mask = summary_mask[i_array][j_pair]
-                if mask is not None and mask.shape[0] == n_time:
-                    summary_array[i_array, j_pair, :] = mask.astype(int)
-
-        fig_sum, axes_sum = plt.subplots(1, n_pairs_fig,
-                                         figsize=(6*n_pairs_fig, 4), sharey=True)
-        if n_pairs_fig == 1: axes_sum = [axes_sum]
-        for j_pair, (s1, s2) in enumerate(pairs_fig_corr):
-            ax = axes_sum[j_pair]
-            im = ax.imshow(summary_array[:, j_pair, :], cmap=teal_cmap,
-                           aspect='auto', interpolation='none',
-                           extent=[x_axis[0], x_axis[-1], 0.5, n_arrays_fig + 0.5])
-            ax.set_title(f"{s1} vs {s2}")
-            ax.set_xlabel('Time rel. reward (s)' if plot_type == 'timelock'
-                          else 'Frequency (Hz)')
-            if j_pair == 0:
-                ax.set_ylabel('Arrays')
-                ax.set_yticks(range(1, n_arrays_fig + 1))
-                ax.set_yticklabels([str(a) for a in arrays_list])
-        plt.subplots_adjust(left=0.05, right=0.88, top=0.88, bottom=0.12, wspace=0.3)
-        cbar_ax = fig_sum.add_axes([0.90, 0.12, 0.02, 0.76])
-        cbar = fig_sum.colorbar(im, cax=cbar_ax)
-        cbar.set_label('Significant (1=pairwise)')
+            ch_idx = [sess['channels'].index(c) for c in ch_valid]
+            x_axis = sess['time'] if plot_type != 'residual' else sess['freqs']
+            if plot_type == 'residual':
+                vals2.append(np.mean(sess['resid'][:, ch_idx], axis=1))
+            else:
+                vals2.append(np.mean(np.mean(sess['trials'][:, :, ch_idx], axis=0), axis=1))
+        if not (vals1 and vals2):
+            return
+        min_samples = min(v.shape[0] for v in vals1 + vals2)
+        vals1 = [v[:min_samples] for v in vals1]
+        vals2 = [v[:min_samples] for v in vals2]
+        x_axis = x_axis[:min_samples]
+        data1 = np.stack(vals1, axis=0)
+        data2 = np.stack(vals2, axis=0)
+        diff, sig, thr = permutation_test(
+            data1, data2, n_perms=n_perms, alpha=alpha, rng=rng)
+    
+        if not os.path.exists(npz_path):
+            np.savez_compressed(
+                npz_path,
+                diff=diff, sig=sig, thr=thr,
+                mean1=np.nanmean(data1, axis=0),
+                mean2=np.nanmean(data2, axis=0),
+                x_axis=x_axis, s1=s1, s2=s2, plot_type=plot_type,
+                array_index=array_index)
+    
+    
+    for plot_type, store in [('timelock', state_data_timelock_corr),
+                             ('spectra', state_data_spectra_corr),
+                             ('residual', state_data_residuals_corr)]:
+        if not store:
+            continue
+        first_channels = store[next(iter(store))][0]['channels']
+        Sig_CH = np.array_split(first_channels, 6)
+    
+        for (s1, s2) in pairs_corr:
+            print(f"  --> {plot_type}: state {s1} vs {s2}")
+    
+            # Per-array (1..6) -> permdata_{plot}_pair{s1}_{s2}_ARRAY_array{i+1}.npz
+            for i_arr, ch_names in enumerate(Sig_CH):
+                npz_name = (f"permdata_{plot_type}_pair{s1}_{s2}"
+                            f"_ARRAY_array{i_arr+1}.npz")
+                _array_perm_save_npz(
+                    store, plot_type, ch_names, s1, s2,
+                    array_index=i_arr + 1,
+                    npz_path=os.path.join(correct_results_dir, npz_name))
+    
+            # Merged: Array 1-3 + individual arrays 4/5/6
+            # -> cb_permdata_{plot}_pair{s1}_{s2}_{label_no_dash}.npz
+            for i_arr, ch_names in enumerate(Sig_CH):
+                if i_arr < 3:
+                    if i_arr == 0:
+                        combined_ch_names = np.concatenate(Sig_CH[:3])
+                        array_label = "Array 1-3"
+                    else:
+                        continue
+                else:
+                    combined_ch_names = ch_names
+                    array_label = f"Array {i_arr+1}"
+                npz_name = (f"cb_permdata_{plot_type}_pair{s1}_{s2}"
+                            f"_{array_label.replace('-', '')}.npz")
+                _array_perm_save_npz(
+                    store, plot_type, combined_ch_names, s1, s2,
+                    array_index=i_arr + 1,
+                    npz_path=os.path.join(correct_results_dir, npz_name))
+    
+    
+    # -----------------------------
+    # Summary figures (correct trials, array-level only)
+    # -----------------------------
+    correct_summary_dir = os.path.join(correct_output_dir, 'summary_plots')
+    os.makedirs(correct_summary_dir, exist_ok=True)
+    
+    
+    def load_permdata_correct(plot_type, s1, s2, array_index):
+        fname = f"permdata_{plot_type}_pair{s1}_{s2}_ARRAY_array{array_index}.npz"
+        fpath = os.path.join(correct_results_dir, fname)
+        if not os.path.exists(fpath):
+            return None
+        return np.load(fpath)
+    
+    
+    def load_permdata_merged_correct(plot_type, s1, s2, array_label):
+        fname = f"cb_permdata_{plot_type}_pair{s1}_{s2}_{array_label.replace('-', '')}.npz"
+        fpath = os.path.join(correct_results_dir, fname)
+        if not os.path.exists(fpath):
+            return None
+        return np.load(fpath)
+    
+    
+    pairs_fig_corr = list(itertools.combinations(
+        [s for s in sorted(state_data_timelock_corr.keys()) if s != 1], 2))
+    
+    # Figure 1: per-array grid (rows = arrays, cols = state pairs)
+    for plot_type in plot_types_fig:
+        ylabel = 'Amplitude' if plot_type == 'timelock' else 'Residual Power'
+        n_rows, n_cols = len(arrays_list), len(pairs_fig_corr)
+        if n_cols == 0:
+            continue
+    
+        fig_real, axes_real = plt.subplots(n_rows, n_cols,
+                                           figsize=(6*n_cols, 3*n_rows),
+                                           sharex='col', sharey='row')
+        if n_rows == 1: axes_real = np.expand_dims(axes_real, 0)
+        if n_cols == 1: axes_real = np.expand_dims(axes_real, 1)
+    
+        summary_mask = []
+        x_axis = None
+        for i_array, array_index in enumerate(arrays_list):
+            summary_mask_array = []
+            for j_pair, (s1, s2) in enumerate(pairs_fig_corr):
+                ax = axes_real[i_array, j_pair]
+                perm_array = load_permdata_correct(plot_type, s1, s2, array_index)
+                if perm_array is None:
+                    ax.axis('off')
+                    summary_mask_array.append(None)
+                    continue
+    
+                x_axis = perm_array['x_axis']
+                data1, data2 = perm_array['mean1'], perm_array['mean2']
+                sig_mask = perm_array['sig']
+    
+                ax.plot(x_axis, data1, color=state_colors[s1], label=f"State {s1}")
+                ax.plot(x_axis, data2, color=state_colors[s2], label=f"State {s2}")
+                if plot_type == 'timelock':
+                    ax.set_ylim(-15, 15)
+                ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1],
+                                where=sig_mask, color=sig_color, alpha=0.4)
+    
+                if i_array == 0: ax.set_title(f"{s1} vs {s2}", fontsize=10)
+                if j_pair == 0: ax.set_ylabel(f"Array {array_index}\n{ylabel}")
+                if i_array == n_rows - 1:
+                    xlabel = ('Time rel. reward (s)' if plot_type == 'timelock'
+                              else 'Frequency (Hz)')
+                    ax.set_xlabel(xlabel)
+                ax.legend(fontsize=6)
+    
+                summary_mask_array.append(sig_mask)
+            summary_mask.append(summary_mask_array)
+    
+        plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.08,
+                            wspace=0.25, hspace=0.25)
         plt.suptitle(
-            f"{plot_type} - Pairwise significance across arrays "
+            f"{plot_type} - Mean across all sessions (reward-centered, correct only)",
+            fontsize=14)
+        plt.savefig(os.path.join(correct_summary_dir,
+                                 f"{plot_type}_all_arrays_pairs.pdf"))
+        plt.close()
+    
+        # Figure 2: pairwise significance heatmap
+        if x_axis is not None:
+            n_arrays_fig = len(arrays_list)
+            n_pairs_fig = len(pairs_fig_corr)
+            n_time = len(x_axis)
+            summary_array = np.zeros((n_arrays_fig, n_pairs_fig, n_time), dtype=int)
+            for i_array in range(n_arrays_fig):
+                for j_pair in range(n_pairs_fig):
+                    mask = summary_mask[i_array][j_pair]
+                    if mask is not None and mask.shape[0] == n_time:
+                        summary_array[i_array, j_pair, :] = mask.astype(int)
+    
+            fig_sum, axes_sum = plt.subplots(1, n_pairs_fig,
+                                             figsize=(6*n_pairs_fig, 4), sharey=True)
+            if n_pairs_fig == 1: axes_sum = [axes_sum]
+            for j_pair, (s1, s2) in enumerate(pairs_fig_corr):
+                ax = axes_sum[j_pair]
+                im = ax.imshow(summary_array[:, j_pair, :], cmap=teal_cmap,
+                               aspect='auto', interpolation='none',
+                               extent=[x_axis[0], x_axis[-1], 0.5, n_arrays_fig + 0.5])
+                ax.set_title(f"{s1} vs {s2}")
+                ax.set_xlabel('Time rel. reward (s)' if plot_type == 'timelock'
+                              else 'Frequency (Hz)')
+                if j_pair == 0:
+                    ax.set_ylabel('Arrays')
+                    ax.set_yticks(range(1, n_arrays_fig + 1))
+                    ax.set_yticklabels([str(a) for a in arrays_list])
+            plt.subplots_adjust(left=0.05, right=0.88, top=0.88, bottom=0.12, wspace=0.3)
+            cbar_ax = fig_sum.add_axes([0.90, 0.12, 0.02, 0.76])
+            cbar = fig_sum.colorbar(im, cax=cbar_ax)
+            cbar.set_label('Significant (1=pairwise)')
+            plt.suptitle(
+                f"{plot_type} - Pairwise significance across arrays "
+                "(reward-centered, correct only)",
+                fontsize=14)
+            plt.savefig(os.path.join(correct_summary_dir,
+                                     f"{plot_type}_pairwise_summary_all_arrays.pdf"))
+            plt.close()
+    
+    # Figure 3: merged-array grid (rows = state pairs, cols = Array 1-3, 4, 5, 6)
+    array_labels_merged = ['Array 1-3', 'Array 4', 'Array 5', 'Array 6']
+    for plot_type in plot_types_fig:
+        ylabel = 'Amplitude' if plot_type == 'timelock' else 'Residual Power'
+        n_rows, n_cols = len(pairs_fig_corr), len(array_labels_merged)
+        if n_rows == 0:
+            continue
+    
+        fig_real, axes_real = plt.subplots(n_rows, n_cols,
+                                           figsize=(6*n_cols, 3*n_rows),
+                                           sharex='col', sharey='row')
+        if n_rows == 1: axes_real = np.expand_dims(axes_real, 0)
+        if n_cols == 1: axes_real = np.expand_dims(axes_real, 1)
+    
+        for i_pair, (s1, s2) in enumerate(pairs_fig_corr):
+            for j_array, array_label in enumerate(array_labels_merged):
+                ax = axes_real[i_pair, j_array]
+                perm_array = load_permdata_merged_correct(plot_type, s1, s2, array_label)
+                if perm_array is None:
+                    ax.axis('off')
+                    continue
+    
+                x_axis = perm_array['x_axis']
+                data1, data2 = perm_array['mean1'], perm_array['mean2']
+                sig_mask = perm_array['sig']
+    
+                ax.plot(x_axis, data1, color=state_colors[s1], label=f"State {s1}")
+                ax.plot(x_axis, data2, color=state_colors[s2], label=f"State {s2}")
+                if plot_type == 'timelock':
+                    ax.set_ylim(-15, 15)
+                ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1],
+                                where=sig_mask, color=sig_color, alpha=0.4)
+    
+                if i_pair == 0: ax.set_title(f"{array_label}", fontsize=10)
+                if j_array == 0: ax.set_ylabel(f"{s1} vs {s2}\n{ylabel}")
+                if i_pair == n_rows - 1:
+                    xlabel = ('Time rel. reward (s)' if plot_type == 'timelock'
+                              else 'Frequency (Hz)')
+                    ax.set_xlabel(xlabel)
+                ax.legend(fontsize=6)
+    
+        plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.08,
+                            wspace=0.25, hspace=0.25)
+        plt.suptitle(
+            f"{plot_type} - Mean across all sessions, merged arrays "
             "(reward-centered, correct only)",
             fontsize=14)
         plt.savefig(os.path.join(correct_summary_dir,
-                                 f"{plot_type}_pairwise_summary_all_arrays.pdf"))
+                                 f"{plot_type}_merged_arrays_pairs.pdf"))
         plt.close()
+    
+    print(f"\nCorrect-trials summary figures saved under {correct_summary_dir}")
 
-# Figure 3: merged-array grid (rows = state pairs, cols = Array 1-3, 4, 5, 6)
-array_labels_merged = ['Array 1-3', 'Array 4', 'Array 5', 'Array 6']
-for plot_type in plot_types_fig:
-    ylabel = 'Amplitude' if plot_type == 'timelock' else 'Residual Power'
-    n_rows, n_cols = len(pairs_fig_corr), len(array_labels_merged)
-    if n_rows == 0:
-        continue
 
-    fig_real, axes_real = plt.subplots(n_rows, n_cols,
-                                       figsize=(6*n_cols, 3*n_rows),
-                                       sharex='col', sharey='row')
-    if n_rows == 1: axes_real = np.expand_dims(axes_real, 0)
-    if n_cols == 1: axes_real = np.expand_dims(axes_real, 1)
-
-    for i_pair, (s1, s2) in enumerate(pairs_fig_corr):
-        for j_array, array_label in enumerate(array_labels_merged):
-            ax = axes_real[i_pair, j_array]
-            perm_array = load_permdata_merged_correct(plot_type, s1, s2, array_label)
-            if perm_array is None:
-                ax.axis('off')
-                continue
-
-            x_axis = perm_array['x_axis']
-            data1, data2 = perm_array['mean1'], perm_array['mean2']
-            sig_mask = perm_array['sig']
-
-            ax.plot(x_axis, data1, color=state_colors[s1], label=f"State {s1}")
-            ax.plot(x_axis, data2, color=state_colors[s2], label=f"State {s2}")
-            if plot_type == 'timelock':
-                ax.set_ylim(-15, 15)
-            ax.fill_between(x_axis, ax.get_ylim()[0], ax.get_ylim()[1],
-                            where=sig_mask, color=sig_color, alpha=0.4)
-
-            if i_pair == 0: ax.set_title(f"{array_label}", fontsize=10)
-            if j_array == 0: ax.set_ylabel(f"{s1} vs {s2}\n{ylabel}")
-            if i_pair == n_rows - 1:
-                xlabel = ('Time rel. reward (s)' if plot_type == 'timelock'
-                          else 'Frequency (Hz)')
-                ax.set_xlabel(xlabel)
-            ax.legend(fontsize=6)
-
-    plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.08,
-                        wspace=0.25, hspace=0.25)
-    plt.suptitle(
-        f"{plot_type} - Mean across all sessions, merged arrays "
-        "(reward-centered, correct only)",
-        fontsize=14)
-    plt.savefig(os.path.join(correct_summary_dir,
-                             f"{plot_type}_merged_arrays_pairs.pdf"))
-    plt.close()
-
-print(f"\nCorrect-trials summary figures saved under {correct_summary_dir}")
+if correct_only:
+    run_correct_trials_analysis()
+else:
+    print("\nSkipping correct-trials-only analysis (correct_only=False)")
