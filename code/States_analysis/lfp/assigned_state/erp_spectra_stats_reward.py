@@ -63,9 +63,29 @@ trial_info_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_da
 states_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/states_analysis'
 processed_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/states_analysis/processed'
 eye_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/eye_data'
-output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/reward_aligned/all_trials/erp_spectra'
+
+# ---- Reward-walkthrough cluster switch ----
+# The 5xxx reward marker lands either ~0 ms or ~334 ms after the stimulus
+# walkthrough (3013/3023). This switch restricts the analysis to one cluster so
+# you can check whether a pre-reward oscillation moves with the marker offset.
+#   'all'       -> no filtering (original behavior)
+#   'near0'     -> only trials with |reward - walkthrough| <= cluster_tol
+#   'around334' -> only trials with reward - walkthrough within cluster_tol of 0.334 s
+reward_walk_cluster = 'around334'
+cluster_tol = 0.05          # seconds, half-width of each cluster window
+cluster_center_334 = 0.334  # seconds, center of the late cluster
+cluster_tag = 'all' if reward_walk_cluster == 'all' else f'cluster_{reward_walk_cluster}'
+
+# Roots for plots and results. The cluster folder is inserted directly under
+# reward_aligned/ so that all outputs for one cluster (all_trials +
+# correct_trials) live together
 results_dir = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp'
-results_data_dir = os.path.join(results_dir, "reward_aligned", "all_trials", "erp_spectra")
+reward_aligned_plots_base = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/reward_aligned'
+reward_aligned_plots_root = os.path.join(reward_aligned_plots_base, cluster_tag)
+reward_aligned_results_root = os.path.join(results_dir, 'reward_aligned', cluster_tag)
+
+output_dir = os.path.join(reward_aligned_plots_root, 'all_trials', 'erp_spectra')
+results_data_dir = os.path.join(reward_aligned_results_root, 'all_trials', 'erp_spectra')
 
 os.makedirs(output_dir, exist_ok=True)
 os.makedirs(results_data_dir, exist_ok=True)
@@ -94,32 +114,28 @@ rng = np.random.default_rng(42)
 
 # ---- Diagnostic toggle ----
 # When True: run the reward - walkthrough (3013/3023) histogram analysis AND
-# the per-group eventmarker filtering. The main LFP/permutation pipeline below
-# runs independently of this flag, so you can set this to False and only run
-# the main analysis (or vice versa).
+# the per-group eventmarker filtering.
 run_diagnostic = False
 
 # When True: only include correct trials (ResponseCorrect, no block-exit).
-correct_only = True
+correct_only = False
 
 # Groups of trials to compare by their reward - walkthrough diff (seconds).
 # Each entry: 'group_label': (low, high) inclusive-low, exclusive-high.
-# Use this to see which eventmarkers are associated with each diff bucket
-# (e.g. trials near 0 s vs trials around 0.334 s).
+# Use this to see which eventmarkers are associated with each diff bucket.
 diagnostic_diff_groups = {
     'near_zero':      (-0.05, 0.05),
     'around_0.334s':  (0.30, 0.40),
 }
 # Event codes to exclude from per-trial eventmarker listings, summary table,
-# and bar charts (these are noisy / high-count and drown out the rest).
-# 996 = PhotodiodeUpdate. Add more codes here if needed.
+# and bar charts.
 diagnostic_exclude_codes = {996}
 
 # Reward-centering parameters
 # Window is centered on reward onset; pre_rew is the look-back duration
 # (going back in time from reward), post_rew is the look-forward duration.
 pre_rew = 1.5 # seconds before reward onset
-post_rew = 0.015  #seconds after reward onset
+post_rew = 0.0  #seconds after reward onset
 
 # load states info for all sessions
 state_probs = np.load(f'{states_data_dir}/foraging_shivangi_no_sess1_clipped_state_assignments.npy')
@@ -223,6 +239,31 @@ def get_reward_walkthrough_diffs_from_log(session_name):
         which_stim[trl] = 'A' if walk_evt_all[w_first] == 3013 else 'B'
 
     return diffs, which_stim, trial_indices
+
+
+def get_reward_walk_cluster_mask(session_name, cluster):
+    """
+    Per-log-trial boolean selecting trials whose reward(5xxx) - walkthrough
+    (3013/3023) offset falls in the requested cluster.
+
+    cluster:
+      'all'       -> all trials (no filtering; returns all True)
+      'near0'     -> |diff| <= cluster_tol
+      'around334' -> |diff - cluster_center_334| <= cluster_tol
+
+    Trials with no walkthrough or no reward event (NaN diff) are excluded from
+    'near0'/'around334' (they cannot be assigned to a cluster).
+    """
+    diffs, _, _ = get_reward_walkthrough_diffs_from_log(session_name)
+    if cluster == 'all':
+        return np.ones(len(diffs), dtype=bool)
+    valid = ~np.isnan(diffs)
+    if cluster == 'near0':
+        return valid & (np.abs(diffs) <= cluster_tol)
+    elif cluster == 'around334':
+        return valid & (np.abs(diffs - cluster_center_334) <= cluster_tol)
+    else:
+        raise ValueError(f"Unknown reward_walk_cluster: {cluster!r}")
 
 
 def get_correct_trial_mask_from_log(session_name):
@@ -354,7 +395,7 @@ def permutation_test(data1, data2, n_perms=1000, alpha=0.05, rng=None):
 if run_diagnostic:
     print("\n=== Building reward - walkthrough (3013/3023) time-difference histogram ===")
 
-    hist_output_dir = os.path.join(output_dir, 'reward_walkthrough_diff_hist')
+    hist_output_dir = os.path.join(reward_aligned_plots_base, 'reward_walkthrough_diff_hist')
     os.makedirs(hist_output_dir, exist_ok=True)
 
     per_session_diffs = {}     # session_name -> dict with diffs, which_stim, trial_indices
@@ -707,6 +748,15 @@ for session_name in sessions:
     })
     combined_df = pd.merge(trial_info_df, stim_df,
                            left_on='Trial_Number', right_on='TrialIndex', how='inner')
+
+    # Restrict to one reward-walkthrough offset cluster if requested
+    if reward_walk_cluster != 'all':
+        cluster_indices = np.where(
+            get_reward_walk_cluster_mask(session_name, reward_walk_cluster))[0]
+        n_before_cluster = len(combined_df)
+        combined_df = combined_df[combined_df['TrialIndex'].isin(cluster_indices)]
+        print(f"  Reward-walk cluster '{reward_walk_cluster}': "
+              f"{len(combined_df)}/{n_before_cluster} trials retained")
 
     # load LFP data (full length, stimulus-aligned)
     datalfp = spy.load(lfp_path)
@@ -1302,13 +1352,8 @@ print(f"Summary plots saved under {summary_output_dir}")
 def run_correct_trials_analysis():
     print("\n###### Building correct-trials-only stores for array-level analysis ######")
 
-    correct_output_dir = (
-        '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/'
-        'reward_aligned/correct_trials'
-    )
-    correct_results_dir = os.path.join(
-        results_dir, 'reward_aligned', 'correct_trials'
-    )
+    correct_output_dir = os.path.join(reward_aligned_plots_root, 'correct_trials')
+    correct_results_dir = os.path.join(reward_aligned_results_root, 'correct_trials')
     os.makedirs(correct_output_dir, exist_ok=True)
     os.makedirs(correct_results_dir, exist_ok=True)
     
@@ -1352,6 +1397,15 @@ def run_correct_trials_analysis():
         correct_log_indices = np.where(correct_mask_log)[0]
         combined_df = combined_df[combined_df['TrialIndex'].isin(correct_log_indices)]
         print(f"  Correct trials after state/info merge: {len(combined_df)}")
+
+        # Restrict to one reward-walkthrough offset cluster if requested
+        if reward_walk_cluster != 'all':
+            cluster_indices = np.where(
+                get_reward_walk_cluster_mask(session_name, reward_walk_cluster))[0]
+            n_before_cluster = len(combined_df)
+            combined_df = combined_df[combined_df['TrialIndex'].isin(cluster_indices)]
+            print(f"  [correct] Reward-walk cluster '{reward_walk_cluster}': "
+                  f"{len(combined_df)}/{n_before_cluster} trials retained")
     
         datalfp = spy.load(lfp_path)
         ensure_trialindex_in_trialdefinition(datalfp)

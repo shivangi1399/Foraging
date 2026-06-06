@@ -57,8 +57,8 @@ n_stimuli   = 5
 stim_name   = 'ImageStimulus'
 
 PRE          = 0.1     # s, pre-entry window
-POST         = 0.15     # s, post-entry window
-MIN_DWELL_S  = 0.15    # 50 ms — new state must hold this long after entry
+POST         = 0.05     # s, post-entry window
+MIN_DWELL_S  = 0.05    # 50 ms — new state must hold this long after entry
 
 output_dir       = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/RF VR mapping_no_reset/RF_In_Out/entry_locked_{int(PRE*1000)}_{int(POST*1000)}'
 results_data_dir = os.path.join(output_dir, 'data')
@@ -78,7 +78,6 @@ STATE_LABELS = {0: 'background', 1: 'target_in', 2: 'distractor_in'}
 n_perms = 1000
 alpha   = 0.05
 rng     = np.random.default_rng(42)
-
 
 # -----------------------------
 # Helpers
