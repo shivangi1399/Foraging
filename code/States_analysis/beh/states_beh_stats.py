@@ -1,3 +1,64 @@
+"""
+States vs behavior: relate HMM behavioral states to what the animal is doing.
+
+Takes a trained 4-state HMM's per-trial labels (23 sessions) and crosses them
+against trial outcome, difficulty, reaction time, and position within/around
+experimental blocks -- testing each relationship and plotting it.
+
+INPUTS
+    state_assignments.npy : hard labels, argmax state per trial, shape (n_trials,).
+    state_probs.npy       : soft labels, HMM posterior P(state=k | all trials),
+                            shape (n_trials, K), rows sum to 1. argmax = hard label.
+    session_index.json    : maps the flat trial index back to each session.
+    emissions.npy + .log  : reaction time and eventmarkers (outcome, block change).
+
+HARD vs SOFT
+    Hard (counts / discrete identity): state durations, transition matrix, the
+        ASR significance heatmaps, and grouping trials for RT.
+    Soft (averaging membership): the baseline-ratio magnitude panels -- graded
+        membership is far less noisy than a 0/1 label, especially for the rare
+        states (1 and 3, ~1%).
+    Rule of thumb: counts -> hard, averages -> soft.
+
+CORE STATISTIC (the z-score heatmaps): ASR + circular-shift permutation
+    For each (state, category) cell, build the 2x2 table [in-state vs not] x
+    [in-category vs not] and compute the adjusted standardized residual:
+
+        E   = row_total * col_total / N
+        ASR = (O - E) / sqrt( E * (1 - p_row) * (1 - p_col) )    ,  p = total/N
+
+    ASR ~ N(0,1) under independence, so it reads like a z-score: positive = the
+    state occurs with that category MORE than chance, negative = less, magnitude
+    = SDs from expected. The (1-p_row)(1-p_col) term makes it unit-variance
+    (hence "adjusted") so cells are comparable. Computed on HARD labels (counts).
+
+    Significance is NOT from free reshuffling -- states are sticky (highly
+    autocorrelated), so free shuffling would treat trials as independent and
+    over-call significance. Instead each of 10,000 permutations CIRCULARLY SHIFTS
+    the state sequence within each session (np.roll): this preserves run-length
+    structure and per-state counts, randomizing only the phase relative to the
+    behavioral labels -- the correct null. Per cell:
+
+        p = count(|ASR_perm| >= |ASR_obs|) / 10000      (two-tailed); * if p<0.05.
+
+    asr_with_perm         -> trial-level tables (outcome, outcome x difficulty).
+    asr_with_perm_records -> block-position / block-transition (shifts the full
+                             session sequence, re-reads each record by abs index).
+
+BASELINE-RATIO PANELS (magnitude, not significance): SOFT
+    ratio = mean P(state | trial) over trials in a bin/offset
+            -------------------------------------------------- ,  centered at 1.0
+                  overall mean P(state)  (= baseline_soft)
+    1.0 = as common as its overall rate, 2.0 = twice as common.
+
+OTHER PANELS
+    State durations : run-lengths of consecutive identical hard labels.
+    Transition matrix: empirical count(a -> b), row-normalized.
+    RT by state     : violin + pairwise Mann-Whitney U (Bonferroni) -- continuous
+                      RT distributions per state, a different question than ASR.
+
+ENV: run with the `warping` conda env (syncopy).
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 import os
@@ -8,7 +69,7 @@ import seaborn as sns
 from itertools import groupby, combinations
 from scipy.stats import zscore, mannwhitneyu, wilcoxon
 from scipy.stats import chi2_contingency, fisher_exact
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 import json
 import math
 
@@ -31,6 +92,115 @@ raw_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/raw_data'
 os.makedirs(output_dir, exist_ok=True)
 
 # --------------------------------------------------------------------
+# Statistics helpers: adjusted standardized residuals (ASR)
+#                     + circular-shift permutation null
+# --------------------------------------------------------------------
+# Why this approach: HMM states are "sticky" (a state persists for many
+# consecutive trials), so trial-by-trial state labels are strongly
+# autocorrelated. A plain reshuffle would treat trials as independent and
+# inflate significance. A *circular shift* per session randomizes only the
+# phase of the state sequence relative to the behavioral labels while keeping
+# each session's run-length structure (and each state's count) intact -- the
+# correct null for autocorrelated sequences.
+def asr_matrix(state_arr, states, group_arrays):
+    """Signed adjusted standardized residual for each (state, group) cell.
+
+    For each state `st` and each binary behavioral mask `grp`, build the 2x2
+    table [in-state vs not] x [in-group vs not] and return the ASR of the
+    (in-state & in-group) cell:
+
+        ASR = (O - E) / sqrt(E * (1 - p_row) * (1 - p_col))
+
+    Returns an array of shape (n_states, n_groups).
+    """
+    state_arr = np.asarray(state_arr)
+    N = len(state_arr)
+    Z = np.full((len(states), len(group_arrays)), np.nan)
+    for i, st in enumerate(states):
+        in_state = (state_arr == st)
+        col = in_state.sum()                      # invariant under circular shift
+        p_col = col / N
+        for j, grp in enumerate(group_arrays):
+            row = grp.sum()
+            if row == 0 or col == 0:
+                continue
+            O = np.count_nonzero(in_state & grp)  # only this changes per shift
+            E = row * col / N
+            p_row = row / N
+            denom = math.sqrt(E * (1 - p_row) * (1 - p_col))
+            if denom > 0:
+                Z[i, j] = (O - E) / denom
+    return Z
+
+
+def _roll_within_sessions(state_flat, sess_slices, rng):
+    """Circularly shift the state sequence within each session by a random offset."""
+    shifted = state_flat.copy()
+    for idx in sess_slices:
+        n = len(idx)
+        if n > 1:
+            shifted[idx] = np.roll(state_flat[idx], rng.integers(1, n))
+    return shifted
+
+
+def asr_with_perm(state_flat, sess_slices, states, group_arrays, n_perms, rng):
+    """Observed ASR matrix + circular-shift permutation p-values.
+
+    `state_flat` is one ordered state value per row; `sess_slices` are the
+    per-session contiguous row indices; `group_arrays` are FIXED behavioral
+    masks aligned to those rows. Each permutation circularly shifts the states
+    within session, recomputes the ASR matrix, and counts how often the
+    permuted |ASR| >= observed |ASR| (two-tailed). Returns (asr, p), each
+    shape (n_states, n_groups).
+    """
+    obs = asr_matrix(state_flat, states, group_arrays)
+    valid = ~np.isnan(obs)
+    count = np.zeros_like(obs)
+    for _ in range(n_perms):
+        perm = asr_matrix(_roll_within_sessions(state_flat, sess_slices, rng),
+                          states, group_arrays)
+        count[valid] += (np.abs(perm) >= np.abs(obs))[valid]
+    p = np.full_like(obs, np.nan)
+    p[valid] = count[valid] / n_perms
+    return obs, p
+
+
+def asr_with_perm_records(rec_session, rec_t, group_arrays, states,
+                          state_seqs, n_perms, rng):
+    """ASR + circular-shift null for record-based analyses (block position /
+    transitions), whose rows are (session, absolute-trial) records drawn from
+    the full session sequences.
+
+    Each permutation circularly shifts each FULL session sequence and re-reads
+    the state for every record at its absolute trial index. This keeps the
+    shift defined on the true trial order even when records are a subset or
+    repeat trials across overlapping windows. Returns (asr, p),
+    shape (n_states, n_groups).
+    """
+    rec_session = np.asarray(rec_session)
+    rec_t = np.asarray(rec_t)
+    sess_rows = {s: np.where(rec_session == s)[0] for s in np.unique(rec_session)}
+    sess_abst = {s: rec_t[rows] for s, rows in sess_rows.items()}
+
+    def gather(seqs):
+        out = np.empty(len(rec_session), dtype=int)
+        for s, rows in sess_rows.items():
+            out[rows] = seqs[s][sess_abst[s]]
+        return out
+
+    obs = asr_matrix(gather(state_seqs), states, group_arrays)
+    valid = ~np.isnan(obs)
+    count = np.zeros_like(obs)
+    for _ in range(n_perms):
+        shifted = {s: (np.roll(seq, rng.integers(1, len(seq))) if len(seq) > 1 else seq)
+                   for s, seq in state_seqs.items()}
+        perm = asr_matrix(gather(shifted), states, group_arrays)
+        count[valid] += (np.abs(perm) >= np.abs(obs))[valid]
+    p = np.full_like(obs, np.nan)
+    p[valid] = count[valid] / n_perms
+    return obs, p
+
+# --------------------------------------------------------------------
 # User Config
 # --------------------------------------------------------------------
 N_STATES_TO_USE = 4
@@ -40,7 +210,22 @@ states_to_include = list(range(N_STATES_TO_USE))
 # Load states info for all sessions (from centralized state assignments)
 # --------------------------------------------------------------------
 print("[1/9] Loading state assignments and session index...")
+# Hard vs soft state labels:
+#   state_assignments  -> hard labels: the argmax state per trial, shape (n_trials,).
+#                         Used for everything that needs a discrete state identity:
+#                         durations, the transition matrix, the count-based ASR
+#                         heatmaps (outcome / difficulty / block-position-ASR /
+#                         block-transition-ASR) and grouping trials for RT.
+#   state_probs        -> soft labels: the HMM forward-backward posterior
+#                         P(state = k | all trials) per trial, shape (n_trials, K),
+#                         each row summing to 1. The hard label is just its argmax.
+#                         Soft retains graded membership, so it is far less noisy
+#                         when AVERAGING membership across trials -- especially for
+#                         the rare states (1 and 3, ~1% each), where a hard 0/1 is
+#                         almost pure noise. We therefore use soft probabilities for
+#                         the baseline-ratio (magnitude) panels below.
 state_assignments = np.load(f'{states_data_dir}/foraging_shivangi_no_sess1_clipped_state_assignments.npy')
+state_probs = np.load(f'{states_data_dir}/foraging_shivangi_no_sess1_clipped_state_probs.npy')
 with open(f'{states_data_dir}/foraging_shivangi_no_sess1_clipped_session_index.json') as f:
     session_index = json.load(f)
 
@@ -62,11 +247,15 @@ state_colors = {
     3: (0.25, 0.35, 0.55)   # slate blue
 }
 
-session_to_states = {}
+session_to_states = {}   # hard labels per session, shape (n_trials,)
+session_to_probs = {}    # soft posteriors per session, shape (n_trials, K)
 for sess in session_index:
     session_id = sess['session_id']
     session_date = session_id.split('_')[1]
     session_to_states[session_date] = state_assignments[
+        sess['start_idx']: sess['end_idx'] + 1
+    ]
+    session_to_probs[session_date] = state_probs[
         sess['start_idx']: sess['end_idx'] + 1
     ]
 
@@ -141,6 +330,9 @@ plt.close()
 # --------------------------------------------------------------------
 print(f"[5/9] Extracting trial-level data for {len(sessions)} sessions...")
 all_trials = []
+# Robust per-session block boundaries (last trial of each block), derived
+# directly from the block-change marker (3091) -- independent of trial outcome.
+session_block_ends = {}
 for session_name in sessions:
     if session_name not in session_to_states:
         continue
@@ -182,6 +374,9 @@ for session_name in sessions:
         return -1
 
     block_end_trial_indices = sorted(set(np.searchsorted(trial_onset, ts[block_idx], side='right')-1))
+    # Keep only in-range boundaries and store for the block-change analyses
+    session_block_ends[session_name] = [b for b in block_end_trial_indices
+                                        if 0 <= b < len(predicted_states)]
     with TextLog(log_filepath) as log:
         trial_data = log.get_info_per_trial(return_eventmarkers=True, return_loc=False)
     difficulty = np.array(['easy' if x in [30,70] else 'hard' if x in [49,51] else 'unknown' for x in trial_data['MorphTarget']])
@@ -214,41 +409,24 @@ outcome_labels = ['Correct', 'Incorrect', 'Misses', 'Exit']
 states = sorted(trial_df['PredictedState'].unique())
 states = [s for s in states if s in states_to_include]
 
-# Compute Z(w) scores: each state vs all other states, per outcome
+# ASR (adjusted standardized residual) per State x Outcome cell, with
+# significance from a circular-shift permutation null (preserves the temporal
+# autocorrelation of the sticky HMM state sequence within each session).
 n_perms = 10000
 rng = np.random.default_rng(42)
-print(f"[6/9] Permutation tests: State x Outcome ({n_perms} perms, {len(outcome_cols)} outcomes x {len(states)} states)...")
-z_matrix = np.full((len(outcome_labels), len(states)), np.nan)
-p_matrix = np.full((len(outcome_labels), len(states)), np.nan)
+print(f"[6/9] Circular-shift ASR: State x Outcome ({n_perms} perms, {len(outcome_cols)} outcomes x {len(states)} states)...")
 
-for i_out, col in enumerate(outcome_cols):
-    print(f"  Outcome: {outcome_labels[i_out]}...")
-    for j_st, state in enumerate(states):
-        in_state = trial_df.loc[trial_df['PredictedState']==state, col].values.astype(float)
-        out_state = trial_df.loc[trial_df['PredictedState']!=state, col].values.astype(float)
-        if len(in_state) < 2 or len(out_state) < 2:
-            continue
-        u_stat, p_val = mannwhitneyu(in_state, out_state, alternative='two-sided')
-        n1, n2 = len(in_state), len(out_state)
-        mu = n1 * n2 / 2
-        sigma = np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
-        z = (u_stat - mu) / sigma
-        # Sign: positive = state has MORE of this outcome than rest
-        z_matrix[i_out, j_st] = z
+# Per-session ordered arrays shared by the trial-level analyses below.
+trial_sorted = trial_df.sort_values(['Session', 'TrialIndex'])
+state_flat = trial_sorted['PredictedState'].to_numpy()
+session_flat = trial_sorted['Session'].to_numpy()
+sess_slices = [np.where(session_flat == s)[0] for s in pd.unique(session_flat)]
 
-        # Permutation test for significance
-        all_vals = np.concatenate([in_state, out_state])
-        count_extreme = 0
-        for _ in range(n_perms):
-            rng.shuffle(all_vals)
-            perm_in = all_vals[:n1]
-            perm_out = all_vals[n1:]
-            u_perm, _ = mannwhitneyu(perm_in, perm_out, alternative='two-sided')
-            z_perm = (u_perm - mu) / sigma
-            if abs(z_perm) >= abs(z):
-                count_extreme += 1
-        p_matrix[i_out, j_st] = count_extreme / n_perms
-
+outcome_arrays = [trial_sorted[c].to_numpy().astype(bool) for c in outcome_cols]
+# asr_with_perm returns (n_states, n_outcomes); transpose to (outcomes, states)
+obs_so, p_so = asr_with_perm(state_flat, sess_slices, states, outcome_arrays, n_perms, rng)
+z_matrix = obs_so.T
+p_matrix = p_so.T
 sig_matrix = p_matrix < 0.05
 
 # --- Diverging pastel light-purple to turquoise colormap ---
@@ -365,36 +543,14 @@ for oc, ol in [('correct', 'correct'), ('block_end', 'exit'), ('wrong', 'wrong')
         outcome_diff_cols.append(col_name)
         outcome_diff_labels.append(f'{ol} | {diff}')
 
-print(f"[7/9] Permutation tests: State x Outcome x Difficulty ({n_perms} perms, {len(outcome_diff_cols)} combos x {len(states)} states)...")
-z_matrix_od = np.full((len(outcome_diff_labels), len(states)), np.nan)
-p_matrix_od = np.full((len(outcome_diff_labels), len(states)), np.nan)
-
-for i_out, col in enumerate(outcome_diff_cols):
-    print(f"  {outcome_diff_labels[i_out]}...")
-    for j_st, state in enumerate(states):
-        in_state = trial_df.loc[trial_df['PredictedState'] == state, col].values.astype(float)
-        out_state = trial_df.loc[trial_df['PredictedState'] != state, col].values.astype(float)
-        if len(in_state) < 2 or len(out_state) < 2:
-            continue
-        u_stat, _ = mannwhitneyu(in_state, out_state, alternative='two-sided')
-        n1, n2 = len(in_state), len(out_state)
-        mu = n1 * n2 / 2
-        sigma = np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
-        z = (u_stat - mu) / sigma
-        z_matrix_od[i_out, j_st] = z
-
-        all_vals = np.concatenate([in_state, out_state])
-        count_extreme = 0
-        for _ in range(n_perms):
-            rng.shuffle(all_vals)
-            perm_in = all_vals[:n1]
-            perm_out = all_vals[n1:]
-            u_perm, _ = mannwhitneyu(perm_in, perm_out, alternative='two-sided')
-            z_perm = (u_perm - mu) / sigma
-            if abs(z_perm) >= abs(z):
-                count_extreme += 1
-        p_matrix_od[i_out, j_st] = count_extreme / n_perms
-
+print(f"[7/9] Circular-shift ASR: State x Outcome x Difficulty ({n_perms} perms, {len(outcome_diff_cols)} combos x {len(states)} states)...")
+# Re-sort to align the newly-added outcome_diff columns to the shared
+# per-session ordering (state_flat / sess_slices from the previous section).
+trial_sorted_od = trial_df.sort_values(['Session', 'TrialIndex'])
+od_arrays = [trial_sorted_od[c].to_numpy().astype(bool) for c in outcome_diff_cols]
+obs_od, p_od = asr_with_perm(state_flat, sess_slices, states, od_arrays, n_perms, rng)
+z_matrix_od = obs_od.T
+p_matrix_od = p_od.T
 sig_matrix_od = p_matrix_od < 0.05
 
 z_abs_max_od = np.nanmax(np.abs(z_matrix_od))
@@ -447,9 +603,9 @@ for session_name in sessions:
         continue
     predicted_states = session_to_states[session_name]
 
-    # Find block boundaries from trial_df
-    sess_df = trial_df[trial_df['Session'] == session_name].sort_values('TrialIndex')
-    block_end_indices = sess_df[sess_df['block_end']].TrialIndex.values
+    # Robust block boundaries (last trial of each block) from the 3091 marker:
+    # every block change, independent of trial outcome.
+    block_end_indices = np.array(sorted(session_block_ends.get(session_name, [])))
     # Build block boundaries: start at 0, end after each block_end
     block_starts = [0] + [be + 1 for be in block_end_indices if be + 1 < len(predicted_states)]
     block_ends = list(block_end_indices) + [len(predicted_states) - 1]
@@ -470,6 +626,7 @@ for session_name in sessions:
             if t < len(predicted_states):
                 block_pos_records.append({
                     'Session': session_name,
+                    'T': t,  # absolute trial index, for circular-shift re-reads
                     'State': int(predicted_states[t]),
                     'NormBin': bin_idx,
                     'NormBinLabel': bin_labels[bin_idx]
@@ -477,52 +634,19 @@ for session_name in sessions:
 
 block_pos_df = pd.DataFrame(block_pos_records)
 
-# Compute observed vs expected (baseline) probability per state per bin
-# Baseline = overall state probability
-state_baseline = block_pos_df['State'].value_counts(normalize=True)
+# ASR per (state, normalized-block-bin) cell, with circular-shift significance.
+# Raveled, per-session state sequences are re-read at each record's absolute
+# trial index after every shift (shared with the block-transition section).
+state_seqs = {s: np.asarray(seq).ravel() for s, seq in session_to_states.items()}
 
-# Z-score approach: for each (state, bin), compare proportion vs shuffled
 bp_states = sorted(block_pos_df['State'].unique())
 bp_states = [s for s in bp_states if s in states_to_include]
 
-print(f"[8/9] Permutation tests: State x Block Position ({n_perms} perms, {len(bp_states)} states x {n_bins} bins)...")
-z_block_pos = np.full((len(bp_states), n_bins), np.nan)
-p_block_pos = np.full((len(bp_states), n_bins), np.nan)
-
-for i_st, state in enumerate(bp_states):
-    print(f"  State {state} ({i_st+1}/{len(bp_states)})...")
-    for j_bin in range(n_bins):
-        in_bin = block_pos_df[block_pos_df['NormBin'] == j_bin]
-        n_total = len(in_bin)
-        if n_total < 5:
-            continue
-        observed = (in_bin['State'] == state).sum()
-        obs_prop = observed / n_total
-
-        # Permutation test: shuffle state labels within each bin
-        all_states_bin = in_bin['State'].values.copy()
-        obs_diff = obs_prop - state_baseline.get(state, 0)
-        count_extreme = 0
-        for _ in range(n_perms):
-            rng.shuffle(all_states_bin)
-            perm_prop = (all_states_bin == state).sum() / n_total
-            perm_diff = perm_prop - state_baseline.get(state, 0)
-            if abs(perm_diff) >= abs(obs_diff):
-                count_extreme += 1
-        p_block_pos[i_st, j_bin] = count_extreme / n_perms
-
-        # Z-score via Mann-Whitney: is state membership different in this bin?
-        is_state = (block_pos_df['State'] == state).astype(float).values
-        is_bin = (block_pos_df['NormBin'] == j_bin).astype(float).values
-        in_group = is_state[is_bin == 1]
-        out_group = is_state[is_bin == 0]
-        if len(in_group) >= 2 and len(out_group) >= 2:
-            u_stat, _ = mannwhitneyu(in_group, out_group, alternative='two-sided')
-            n1, n2 = len(in_group), len(out_group)
-            mu = n1 * n2 / 2
-            sigma = np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
-            z_block_pos[i_st, j_bin] = (u_stat - mu) / sigma
-
+print(f"[8/9] Circular-shift ASR: State x Block Position ({n_perms} perms, {len(bp_states)} states x {n_bins} bins)...")
+bin_arrays = [(block_pos_df['NormBin'] == j).to_numpy() for j in range(n_bins)]
+z_block_pos, p_block_pos = asr_with_perm_records(
+    block_pos_df['Session'].to_numpy(), block_pos_df['T'].to_numpy(),
+    bin_arrays, bp_states, state_seqs, n_perms, rng)
 sig_block_pos = p_block_pos < 0.05
 
 z_abs_max_bp = np.nanmax(np.abs(z_block_pos))
@@ -568,8 +692,10 @@ plt.close()
 # ====================================================================
 # Figure: State Probabilities Around Block Transitions : Different from rest of windows
 # ====================================================================
-window_before = 9  # trials before transition
-window_after = 6   # trials after transition
+# Offset 0 = first trial of the new block, inclusive range, clipped to
+# within-session bounds.
+window_before = 8  # trials before transition
+window_after = 5   # trials after transition
 total_window = window_before + window_after
 
 transition_records = []
@@ -577,17 +703,18 @@ for session_name in sessions:
     if session_name not in session_to_states:
         continue
     predicted_states = session_to_states[session_name]
-    sess_df = trial_df[trial_df['Session'] == session_name].sort_values('TrialIndex')
-    block_end_indices = sess_df[sess_df['block_end']].TrialIndex.values
+    # Robust, outcome-independent block boundaries (3091 marker).
+    block_end_indices = np.array(sorted(session_block_ends.get(session_name, [])))
 
     for be in block_end_indices:
         # Transition point is at be+1 (first trial of new block)
         trans_point = be + 1
-        for offset in range(-window_before, window_after):
+        for offset in range(-window_before, window_after + 1):
             t = trans_point + offset
             if 0 <= t < len(predicted_states):
                 transition_records.append({
                     'Session': session_name,
+                    'T': t,  # absolute trial index, for circular-shift re-reads
                     'State': int(predicted_states[t]),
                     'Offset': offset
                 })
@@ -598,47 +725,11 @@ offsets = sorted(trans_df['Offset'].unique())
 tr_states = sorted(trans_df['State'].unique())
 tr_states = [s for s in tr_states if s in states_to_include]
 
-print(f"[9/9] Permutation tests: State x Block Transitions ({n_perms} perms, {len(tr_states)} states x {len(offsets)} offsets)...")
-z_trans = np.full((len(tr_states), len(offsets)), np.nan)
-p_trans = np.full((len(tr_states), len(offsets)), np.nan)
-
-# Baseline state proportions from full dataset
-state_baseline_trans = trial_df['PredictedState'].value_counts(normalize=True)
-
-for i_st, state in enumerate(tr_states):
-    print(f"  State {state} ({i_st+1}/{len(tr_states)})...")
-    for j_off, offset in enumerate(offsets):
-        in_offset = trans_df[trans_df['Offset'] == offset]
-        n_total = len(in_offset)
-        if n_total < 5:
-            continue
-        observed = (in_offset['State'] == state).sum()
-        obs_prop = observed / n_total
-        obs_diff = obs_prop - state_baseline_trans.get(state, 0)
-
-        # Permutation test
-        all_states_off = in_offset['State'].values.copy()
-        count_extreme = 0
-        for _ in range(n_perms):
-            rng.shuffle(all_states_off)
-            perm_prop = (all_states_off == state).sum() / n_total
-            perm_diff = perm_prop - state_baseline_trans.get(state, 0)
-            if abs(perm_diff) >= abs(obs_diff):
-                count_extreme += 1
-        p_trans[i_st, j_off] = count_extreme / n_perms
-
-        # Z-score via Mann-Whitney
-        is_state = (trans_df['State'] == state).astype(float).values
-        is_offset = (trans_df['Offset'] == offset).astype(float).values
-        in_group = is_state[is_offset == 1]
-        out_group = is_state[is_offset == 0]
-        if len(in_group) >= 2 and len(out_group) >= 2:
-            u_stat, _ = mannwhitneyu(in_group, out_group, alternative='two-sided')
-            n1, n2 = len(in_group), len(out_group)
-            mu = n1 * n2 / 2
-            sigma = np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
-            z_trans[i_st, j_off] = (u_stat - mu) / sigma
-
+print(f"[9/9] Circular-shift ASR: State x Block Transitions ({n_perms} perms, {len(tr_states)} states x {len(offsets)} offsets)...")
+offset_arrays = [(trans_df['Offset'] == o).to_numpy() for o in offsets]
+z_trans, p_trans = asr_with_perm_records(
+    trans_df['Session'].to_numpy(), trans_df['T'].to_numpy(),
+    offset_arrays, tr_states, state_seqs, n_perms, rng)
 sig_trans = p_trans < 0.05
 
 z_abs_max_tr = np.nanmax(np.abs(z_trans))
@@ -689,24 +780,33 @@ plt.close()
 # ====================================================================
 # Figure: State Probabilities Around Block Transitions (Normalized to Baseline)
 # ====================================================================
-# For each (state, offset): observed_proportion / baseline_proportion
-# Baseline = overall state probability from full dataset
+# This is a MAGNITUDE (effect-size) panel, so it uses the SOFT posteriors
+# rather than hard labels. For each (state, offset):
+#     ratio = mean P(state | trial) over records at that offset
+#             ------------------------------------------------------
+#                 overall mean P(state | trial) across all trials
+# A ratio of 1.0 means "as common as its overall rate"; 2.0 means twice as
+# common. Averaging the graded posterior (instead of hard 0/1 membership)
+# keeps the rare states (1 and 3) from being swamped by label noise.
+baseline_soft = state_probs.mean(axis=0)  # (K,) overall mean posterior per state
+trans_probs = np.array([session_to_probs[s][t]
+                        for s, t in zip(trans_df['Session'], trans_df['T'])])  # (n_records, K)
 ratio_trans = np.full((len(tr_states), len(offsets)), np.nan)
-for i_st, state in enumerate(tr_states):
-    baseline_p = state_baseline_trans.get(state, 0)
-    if baseline_p == 0:
+for j_off, offset in enumerate(offsets):
+    mask = (trans_df['Offset'] == offset).to_numpy()
+    if mask.sum() < 5:
         continue
-    for j_off, offset in enumerate(offsets):
-        in_offset = trans_df[trans_df['Offset'] == offset]
-        n_total = len(in_offset)
-        if n_total < 5:
-            continue
-        obs_prop = (in_offset['State'] == state).sum() / n_total
-        ratio_trans[i_st, j_off] = obs_prop / baseline_p
+    mean_p = trans_probs[mask].mean(axis=0)  # (K,) mean posterior at this offset
+    for i_st, state in enumerate(tr_states):
+        if baseline_soft[state] > 0:
+            ratio_trans[i_st, j_off] = mean_p[state] / baseline_soft[state]
 
 fig, ax = plt.subplots(figsize=(14, 5))
-vmax = np.nanmax(ratio_trans)
-im = ax.imshow(ratio_trans, aspect='auto', cmap='RdBu_r', vmin=0, vmax=max(vmax, 2.0),
+# Same diverging colormap as the other panels: purple = below baseline,
+# white = baseline (1.0), turquoise = above baseline. Centered at 1.0.
+vmax = max(np.nanmax(ratio_trans), 2.0)
+im = ax.imshow(ratio_trans, aspect='auto', cmap=purple_turquoise,
+               norm=TwoSlopeNorm(vmin=0, vcenter=1.0, vmax=vmax),
                interpolation='nearest')
 
 # Add dashed line at transition point (offset=0)
@@ -722,9 +822,47 @@ ax.set_yticklabels([f'State {s}' for s in tr_states])
 ax.set_ylabel('State')
 
 cbar = plt.colorbar(im, ax=ax, label='Relative to Baseline (1.0 = expected)')
-plt.title('State Probabilities Around Block Transitions (Normalized to Baseline)')
+plt.title('Soft State Probability Around Block Transitions (Normalized to Baseline)')
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'state_prob_block_transitions_baseline_ratio.pdf'),
+            dpi=600, transparent=False, facecolor='white')
+plt.close()
+
+# ====================================================================
+# Figure: State Probabilities Across Normalized Block Position (Normalized to Baseline)
+# ====================================================================
+# Soft-probability magnitude counterpart of the block-position ASR panel above.
+# For each (state, normalized-position bin):
+#     ratio = mean P(state | trial) over trials in that bin / overall mean P(state)
+bp_probs = np.array([session_to_probs[s][t]
+                     for s, t in zip(block_pos_df['Session'], block_pos_df['T'])])  # (n_records, K)
+ratio_block_pos = np.full((len(bp_states), n_bins), np.nan)
+for j_bin in range(n_bins):
+    mask = (block_pos_df['NormBin'] == j_bin).to_numpy()
+    if mask.sum() < 5:
+        continue
+    mean_p = bp_probs[mask].mean(axis=0)  # (K,) mean posterior in this bin
+    for i_st, state in enumerate(bp_states):
+        if baseline_soft[state] > 0:
+            ratio_block_pos[i_st, j_bin] = mean_p[state] / baseline_soft[state]
+
+fig, ax = plt.subplots(figsize=(14, 5))
+# Same diverging colormap as the other panels: purple = below baseline,
+# white = baseline (1.0), turquoise = above baseline. Centered at 1.0.
+vmax = max(np.nanmax(ratio_block_pos), 2.0)
+im = ax.imshow(ratio_block_pos, aspect='auto', cmap=purple_turquoise,
+               norm=TwoSlopeNorm(vmin=0, vcenter=1.0, vmax=vmax),
+               interpolation='nearest')
+ax.set_xticks(np.arange(n_bins))
+ax.set_xticklabels(bin_labels, rotation=45, ha='right')
+ax.set_xlabel('Normalized Position Within Block')
+ax.set_yticks(np.arange(len(bp_states)))
+ax.set_yticklabels([f'State {s}' for s in bp_states])
+ax.set_ylabel('State')
+cbar = plt.colorbar(im, ax=ax, label='Relative to Baseline (1.0 = expected)')
+plt.title('Soft State Probability Across Normalized Block Position (Normalized to Baseline)')
+plt.tight_layout()
+plt.savefig(os.path.join(output_dir, 'state_prob_block_position_baseline_ratio.pdf'),
             dpi=600, transparent=False, facecolor='white')
 plt.close()
 
