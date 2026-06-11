@@ -29,7 +29,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions')
+sys.path.insert(1, '/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/eyetracking')
 sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/unreal_logfile')
 import time_conversion as tc                 # noqa: E402
 from parse_logfile import TextLog            # noqa: E402
@@ -55,7 +55,7 @@ os.makedirs(save_dir, exist_ok=True)
 
 n_stimuli = 5
 stim_name = 'ImageStimulus'
-MAX_T     = 8.0      # s -- whole-trial x-axis cap (from trial onset); longer trials clipped
+MAX_T     = 5.0      # s -- whole-trial x-axis cap (from trial onset); longer trials clipped
 GAP_ROWS  = 2        # blank rows at block boundaries
 
 # microsaccade exclusion (same thresholds as saccade_erp_rf_split.py)
@@ -322,7 +322,7 @@ if stim_xs:
 rew_xs = [r for r in row_reward if not np.isnan(r) and r <= MAX_T]
 rew_ys = [i for i, r in enumerate(row_reward) if not np.isnan(r) and r <= MAX_T]
 if rew_xs:
-    ax.scatter(rew_xs, rew_ys, color='white', s=10, zorder=6,
+    ax.scatter(rew_xs, rew_ys, color='#FF69B4', s=10, zorder=6,
                linewidths=0.5, edgecolors='black')
 
 # outcome markers (right edge)
@@ -343,7 +343,7 @@ legend_handles = [
                linewidth=0, label='Stimulus onset'),
     Patch(facecolor='#2CA02C', label='Correct response'),
     Patch(facecolor='#D62728', label='Wrong response'),
-    plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='white',
+    plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='#FF69B4',
                markeredgecolor='black', markersize=5, label='Reward', linewidth=0),
 ]
 fig.legend(handles=legend_handles, loc='lower center', ncol=5,
