@@ -17,8 +17,10 @@ from matplotlib.colors import LinearSegmentedColormap
 # -----------------------------
 # User Config
 # -----------------------------
-results_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/200_600/erp_spectra/all_trials'
-output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/200_600/erp_spectra/summary_plots'
+LATENCY = [-0.2, 0.9]
+WIN_TAG = f"{int(round(abs(LATENCY[0]) * 1000))}_{int(round(abs(LATENCY[1]) * 1000))}"
+results_data_dir = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/{WIN_TAG}/erp_spectra/all_trials'
+output_dir = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/{WIN_TAG}/erp_spectra/summary_plots'
 os.makedirs(output_dir, exist_ok=True)
 
 plot_types = ['timelock', 'residual']
@@ -204,8 +206,8 @@ print(f"All plots (real data + summary) saved under {output_dir}")
 # Coherence
 # =============================================================
 
-results_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/200_600/coherence_scipy_trialwise'
-output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/200_600/coherence_scipy_trialwise/summary_plots'
+results_dir = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/{WIN_TAG}/coherence_scipy_trialwise'
+output_dir = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/{WIN_TAG}/coherence_scipy_trialwise/summary_plots'
 os.makedirs(output_dir, exist_ok=True)
 
 def load_permdata_trialwise_coh(s1, s2, arr_pair):

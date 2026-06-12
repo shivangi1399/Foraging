@@ -54,9 +54,13 @@ from parse_logfile import TextLog  # noqa: E402
 lfp_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_data/stimAalign_cut/clean_full_length'
 trial_info_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_data/stimAalign_cut/full_length'
 states_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/states_analysis'
-output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/200_600/erp_spectra'
+
+LATENCY = [-0.2, 0.9]
+WIN_TAG = f"{int(round(abs(LATENCY[0]) * 1000))}_{int(round(abs(LATENCY[1]) * 1000))}"
+
+output_dir = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/{WIN_TAG}/erp_spectra'
 results_dir = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp'
-results_data_dir = os.path.join(results_dir, "all_trials", "200_600")
+results_data_dir = os.path.join(results_dir, "all_trials", WIN_TAG, "erp_spectra", "all_trials")
 
 os.makedirs(output_dir, exist_ok=True)
 os.makedirs(results_data_dir, exist_ok=True)
@@ -171,7 +175,7 @@ for session_name in sessions:
     # load LFP data
     datalfp = spy.load(lfp_path)
     ensure_trialindex_in_trialdefinition(datalfp)
-    cfg = spy.StructDict(latency=[-0.2, 0.6])
+    cfg = spy.StructDict(latency=LATENCY)
     data = spy.selectdata(cfg, datalfp)
     selected_trials = data.trialdefinition[:, 3].astype(int)
     states_trial_info_filt = combined_df[combined_df['TrialIndex'].isin(selected_trials)]

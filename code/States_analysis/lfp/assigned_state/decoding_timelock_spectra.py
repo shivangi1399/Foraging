@@ -24,7 +24,7 @@ problem:
 
 Classifier: shrinkage LDA (solver='lsqr', shrinkage='auto') inside a pipeline
 with feature standardisation. Shrinkage keeps the covariance estimate stable
-when there are many time points relative to trials.
+when there are many time points relative to trials. It is a linear model.
 
 Evaluation: stratified k-fold cross-validation with balanced accuracy (states
 are typically imbalanced, so balanced accuracy compares fairly against a chance
@@ -88,18 +88,28 @@ from parse_logfile import TextLog  # noqa: E402,F401
 lfp_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_data/stimAalign_cut/clean_full_length'
 trial_info_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_data/stimAalign_cut/full_length'
 states_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/states_analysis'
-output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/200_900/decoding'
-results_dir = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp'
-results_data_dir = os.path.join(results_dir, "all_trials", "200_900", "decoding")
 
-os.makedirs(output_dir, exist_ok=True)
-os.makedirs(results_data_dir, exist_ok=True)
+LATENCY = [-0.2, 0.9]
+WIN_TAG = f"{int(round(abs(LATENCY[0]) * 1000))}_{int(round(abs(LATENCY[1]) * 1000))}"
+# Output roots. The state-tagged leaf (e.g. ".../timelock_spectra/states_0_2") is
+# appended below once STATES_TO_DECODE is known.
+output_root = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/{WIN_TAG}/decoding/timelock_spectra'
+results_dir = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp'
+results_root = os.path.join(results_dir, "all_trials", WIN_TAG, "decoding", "timelock_spectra")
 
 sessions = ['20230203', '20230208', '20230209', '20230213', '20230214']
 N_STATES_TO_USE = 4       # used only when STATES_TO_DECODE is None: take the
                           # first N states (by sorted label) available in a session
 STATES_TO_DECODE = [0, 2] # explicit states to decode, e.g. [0, 1, 2] or [0, 2].
                           # None -> fall back to the first N_STATES_TO_USE states.
+
+# State-tagged leaf folder: explicit states -> "states_0_2"; None -> "states_first4".
+STATE_TAG = ('_'.join(str(s) for s in STATES_TO_DECODE)
+             if STATES_TO_DECODE is not None else f'first{N_STATES_TO_USE}')
+output_dir = os.path.join(output_root, f'states_{STATE_TAG}')
+results_data_dir = os.path.join(results_root, f'states_{STATE_TAG}')
+os.makedirs(output_dir, exist_ok=True)
+os.makedirs(results_data_dir, exist_ok=True)
 FEATURE_SETS = ['erp', 'spectrum']  # representations to decode: 'erp' (evoked
                           # waveform, time-domain) and/or 'spectrum'. Each is
                           # decoded independently.
@@ -329,7 +339,7 @@ for session_name in sessions:
     # load LFP data
     datalfp = spy.load(lfp_path)
     ensure_trialindex_in_trialdefinition(datalfp)
-    cfg = spy.StructDict(latency=[-0.2, 0.9])
+    cfg = spy.StructDict(latency=LATENCY)
     data = spy.selectdata(cfg, datalfp)
     selected_trials = data.trialdefinition[:, 3].astype(int)
     states_trial_info_filt = combined_df[combined_df['TrialIndex'].isin(selected_trials)]

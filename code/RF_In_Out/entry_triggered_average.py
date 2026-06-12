@@ -272,7 +272,7 @@ def find_runs(s):
 
 
 # -----------------------------
-# STA / ETA statistics -- shared with saccade_triggered_average.py
+# ETA statistics -- shared with saccade_triggered_average.py
 # -----------------------------
 def baseline_correct(epochs, epoch_t, base_win):
     bmask = (epoch_t >= base_win[0]) & (epoch_t < base_win[1])
