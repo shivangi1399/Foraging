@@ -44,18 +44,18 @@ import h5py
 sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/eyetracking')
 sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/convert_unreal_coordinates')
 sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/unreal_logfile')
+from parse_logfile import TextLog
 import time_conversion as tc
 from irec_conversion import dome2cartesian, cartesian2dome, normalize
 from dome_conversion import calc_irec_rotation, eulerRodriguesVectorRotation
 from convert_unreal_coordinates import relative_spherical
-from parse_logfile import TextLog
 from skimage import io
 from skimage.filters import threshold_otsu
 
 # --------------------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------------------- #
-session = '20230214'
+sessions = ['20230214'] #'20230203','20230208','20230209', '20230213',
 RF_sessions = ['20230202', '20230206', '20230209']   # sessions with gaussian RF fits
 
 # proportions along the leaf, tip to tip (same units as measured on the screen)
@@ -70,12 +70,6 @@ eye_coords = np.array([1.5, 2.93, -13.77])   # head position, same as mapping_co
 DOME_R = 60.0
 
 base = '/cs/projects/MWzeronoise/Analysis/4Shivangi'
-stim_dir = f'{base}/Datasets/eye_data/{session}/stimuli'
-image_paths = {49: f'{stim_dir}/hgblsp_049.png', 51: f'{stim_dir}/hgblsp_051.png'}
-overlap_h5 = f'{base}/Results/RF_VR_mapping/RFarea_stim/{session}/RF_stim_collapse.h5'
-out_h5 = f'{base}/Results/RF_VR_mapping/RFarea_stim/{session}/RF_background.h5'   # mirrors overlap_h5
-out_path = f'{base}/Results/RF_VR_mapping/RFarea_stim/{session}/RF_background.pkl'  # calibration + summary
-
 
 # --------------------------------------------------------------------------------------- #
 # SECTION 1 : where the leaf tips sit inside the bounding box (the warped texture quad)
@@ -101,6 +95,7 @@ def leaf_tip_fractions(image_path):
 def load_session(filename):
     stim_loc, stim_ts, stim_params = [], [], []
     with TextLog(filename) as log:
+        log.make_id_struct()  # build log.all_ids before we read it (done lazily otherwise)
         indx = [ii for ii, name in enumerate(log.all_ids['name']) if name.startswith('ImageStimulus')]
         for ii, istim in enumerate(indx):
             if ii + n_stimuli == len(indx):
@@ -208,7 +203,13 @@ def classify(elev, mtn_top, mtn_bot):
 # --------------------------------------------------------------------------------------- #
 # SECTION 5 : walk the overlap .h5, classify background RFs, summarise per channel
 # --------------------------------------------------------------------------------------- #
-def main(max_trials=None):
+def main(session, max_trials=None):
+    stim_dir = f'{base}/Datasets/eye_data/{session}/stimuli'
+    image_paths = {49: f'{stim_dir}/hgblsp_049.png', 51: f'{stim_dir}/hgblsp_051.png'}
+    overlap_h5 = f'{base}/Results/RF_VR_mapping/RFarea_stim/{session}/RF_stim_collapse.h5'
+    out_h5 = f'{base}/Results/RF_VR_mapping/RFarea_stim/{session}/RF_background.h5'   # mirrors overlap_h5
+    out_path = f'{base}/Results/RF_VR_mapping/RFarea_stim/{session}/RF_background.pkl'  # calibration + summary
+
     folder = f'//cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/eye_data/{session}/'
     formatted_date = f'{session[:4]}_{session[4:6]}_{session[6:]}'
     filename = glob.glob(folder + f'{formatted_date}*.log')[0]
@@ -305,4 +306,6 @@ def main(max_trials=None):
 
 
 if __name__ == '__main__':
-    main()
+    for session in sessions:
+        print(f'\n===== session {session} =====')
+        main(session)
