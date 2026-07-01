@@ -6,10 +6,11 @@ This wrapper walks the arrays one at a time; for each array it runs the requeste
 (each step = one acme SLURM submission over just that array's channels), then writes a per-array
 contribution summary. A combined summary is written at the end.
 
-Pipeline STEPS (full chain, in order):
-    'neural'        -> GLM_input/NeuralData.process_channel        (neural_data.npz)
-    'regressors'    -> GLM_input/Regressors.process_channel        (per-channel regressors; needs a
-                                                                    per-session bundle built first)
+Pipeline STEPS (full chain, in dependency order -- do NOT reorder 'regressors'/'neural'):
+    'regressors'    -> GLM_input/Regressors.process_channel        (per-channel regressors + full_mask_reg.npz;
+                                                                    needs a per-session bundle built first)
+    'neural'        -> GLM_input/NeuralData.process_channel        (neural_data.npz; READS full_mask_reg.npz,
+                                                                    so it must run AFTER 'regressors')
     'design'        -> GLM_fitting/DesignMatrix.process_channel    (design matrix + downsampled target)
     'fit'           -> GLM_fitting/FittingGLM.fit_channel          (ridge fit -> {..}_samples.pkl)
     'contributions' -> GLM_fitting/RegressorContributions.contributions_channel ({..}_contributions.npz)
@@ -56,7 +57,7 @@ import Regressors as rg
 # -------------------------
 N_ARRAYS = 6                      # matches erp_spectra_stats.py (np.array_split(channels, 6))
 CHANNELS_PER_ARRAY = 32           # probe layout: 6 arrays x 32 channels = 192 channels total
-STEPS = ['neural', 'regressors', 'design', 'fit', 'contributions']   # trim to what you need
+STEPS = ['regressors', 'neural', 'design', 'fit', 'contributions']   # dependency order; trim to what you need
 ARRAYS_TO_RUN = [1]               # None -> all 6; or e.g. [1, 2] (1-based) to do a subset
 DRY_RUN = False                   # True -> just print the array->channel split and exit
 
