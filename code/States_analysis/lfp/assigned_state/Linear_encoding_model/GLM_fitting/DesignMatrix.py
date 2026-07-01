@@ -6,6 +6,7 @@ Pipeline position: step 3 (see README.md). Consumes the per-channel regressors w
 GLM_input/Regressors.py (+ neural_data.npz from NeuralData.py) and produces, per channel:
     {designMatID}_dMatRaw_sparse.npz / _metadata.npz        (raw, all columns)
     {designMatID}_dMatProcessed_sparse.npz / _metadata.npz  (sparse columns dropped + normalised; fitted)
+    {designMatID}_neural_downsampled.npz                    (LFP target at the design's row rate; FittingGLM input)
 
 Runs over MANY session/channel pairs: by default it auto-discovers every
 `<session>/channel<ch>_regressors` folder under `results_dir`; set SESSIONS / CHANNELS to pin a
@@ -30,6 +31,7 @@ Regressor families:
 """
 
 import os
+import sys
 import re
 import glob
 import math
@@ -41,6 +43,7 @@ from scipy.linalg import qr as dense_qr
 
 from acme import ParallelMap
 
+sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/GLM_fitting')
 from utils import makeLogical
 from reg import makeDesignMatrix_noTrials
 
@@ -65,6 +68,24 @@ POST_TRIG_DUR = 0
 
 # Longest trial we model (LFP is zeroed after reward, so the trial->reward span bounds it)
 maxTrialDur = 5000  # ms
+
+# ---------------------------
+# Reference-level drops (dummy-variable trap)
+# ---------------------------
+# Each per-trial categorical family below partitions EVERY trial, so its levels sum to the
+# whole-trial boxcar -- which is exactly what trial_onset already is. Keeping trial_onset plus
+# all levels of a family makes the design exactly rank-deficient (RedundancySubsample.py flags it),
+# which breaks per-regressor interpretation and the RegressorContributions unique-variance analysis
+# We keep trial_onset as the common baseline and drop ONE reference level per family. These are only 
+# DROPPED FROM THE BUILD, not deleted -- to bring one back into the model, just remove it from this set 
+# and rebuild.
+DROP_REGRESSORS = {
+    'diff_hard',       # difficulty family -> keep diff_easy as the modelled level
+    'movement_right',  # movement family   -> keep movement_left
+    'wrong',           # correctness family-> keep correct (deviation vs the wrong/error baseline)
+    'state_1',         # state family: near-empty (2 trials) and part of the state partition
+    'state_3',         # state family: near-empty (2 trials)
+}
 
 # ---------------------------
 # Sample rate / downsampling  (YOU choose DOWNSAMPLE_FACTOR + the methods)
@@ -158,7 +179,7 @@ def process_channel(channel, session):
     # =========================================================================================
 
     # --- load regressors + neural data ---
-    neural_data = load_reg('neural_data')
+    neural_data = load_reg('neural_data').squeeze()
 
     trial_onset = load_reg('trial_onset')
     stim_onset = load_reg('stim_onset')
@@ -194,7 +215,12 @@ def process_channel(channel, session):
     state_labels = sorted(
         (os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(SESSION_ROOT, 'state_*.npz'))),
         key=lambda s: int(s.split('_')[1]))
-    cogLabels = binary_labels + state_labels
+    # drop the reference levels (see DROP_REGRESSORS) so the design stays full-rank
+    allCogLabels = binary_labels + state_labels
+    cogLabels = [lab for lab in allCogLabels if lab not in DROP_REGRESSORS]
+    dropped = [lab for lab in allCogLabels if lab in DROP_REGRESSORS]
+    if dropped:
+        print(f'Dropping redundant reference regressors from the build: {dropped}')
     cog_data = {lab: load_reg(lab) for lab in cogLabels}
 
     opts = dict(
@@ -211,6 +237,11 @@ def process_channel(channel, session):
     opts['preTrig'] = math.ceil(opts['frameRate'] * opts['preTrigDur'])
     opts['postTrig'] = math.ceil(opts['frameRate'] * opts['postTrigDur'])
 
+    # Per-family pre-window in FRAMES (mPreTime). The kernel columns run lag = -mPreTime..+mPostTime,
+    # so column c of a family = (c - pre_frames)/frameRate seconds from the event. Saved with the
+    # design so AnalyzeRegressorContributions can put the kernel x-axis in seconds (event at 0).
+    family_pre_frames = {}
+
     def set_kernel(pre_s, post_s):
         """Set the stim/move kernel window (seconds) used by makeDesignMatrix_noTrials."""
         opts['preStimDur'] = pre_s
@@ -223,6 +254,8 @@ def process_channel(channel, session):
     def event_block(labels, arrays, pre_s, post_s):
         """Build an event (eventType=3) design block from sample-resolution event vectors."""
         set_kernel(pre_s, post_s)
+        for lab in labels:
+            family_pre_frames[lab] = opts['mPreTime']   # event kernel: lag -mPreTime..+mPostTime
         ev = np.zeros((n_t, len(labels)), dtype=bool)
         for i, a in enumerate(arrays):
             ev[:, i] = a
@@ -240,20 +273,26 @@ def process_channel(channel, session):
         print(f'  {lab}: {int(col.sum())}')
 
     cogR, cogIdx = makeDesignMatrix_noTrials(events, eventType, cogLabels, opts)
+    for lab in cogLabels:
+        family_pre_frames[lab] = opts['preTrig']    # cognitive boxcar: lag -preTrig..+postTrig (preTrig=0)
     print(f'cogR shape: {cogR.shape}')
 
     # --- 1b. trial-event regressors ---
+    # These are transient event responses, so use short peri-event kernels. The old whole-trial
+    # windows (post = maxTrialDur) only had a real response in the first ~0.3 s; the multi-second
+    # tail was noise that overfit in-sample and dragged down the cross-validated contribution
+    # (RegressorContributions). Windows are short (~1 s) to capture the transient without the tail.
     trialOnsetLabels = ['trial_onset']
     trialOnsetR, trialOnsetIdx = event_block(trialOnsetLabels, [trial_onset],
-                                             pre_s=0, post_s=maxTrialDur / 1000)
+                                             pre_s=0, post_s=1.0)
 
     stimOnsetLabels = ['stim_onset']
     stimOnsetR, stimOnsetIdx = event_block(stimOnsetLabels, [stim_onset],
-                                           pre_s=0.2, post_s=(maxTrialDur / 1000) - 0.2)
+                                           pre_s=0.2, post_s=1.0)
 
     rewardOnsetLabels = ['reward_onset']
     rewardOnsetR, rewardOnsetIdx = event_block(rewardOnsetLabels, [reward_onset],
-                                               pre_s=(maxTrialDur / 1000) - 0.2 - 0.3, post_s=0)
+                                               pre_s=0.5, post_s=0)
 
     blockOnsetLabels = ['block_onset']
     blockOnsetR, blockOnsetIdx = event_block(blockOnsetLabels, [block_onset],
@@ -297,6 +336,7 @@ def process_channel(channel, session):
     dummyLabel = ['dummy']
     dummyEvents = makeLogical(trialTimes, n_t)
     dummyR, dummyIdx = makeDesignMatrix_noTrials(dummyEvents[:, None], [1], dummyLabel, opts)
+    family_pre_frames['dummy'] = opts['preTrig']    # same eventType=1 kernel as the cognitive boxcars
     for iCol in range(dummyR.shape[1]):
         dummyR[:, iCol] = dummyR[np.random.permutation(dummyR.shape[0]), iCol]
 
@@ -339,7 +379,7 @@ def process_channel(channel, session):
     # =========================================================================================
     # Drop near-empty columns (too few events at that lag). Threshold to tune (10 rejects nothing).
     col_sum = np.array(np.abs(fullR_sparse).sum(axis=0)).ravel()
-    rejIdx = col_sum < 100
+    rejIdx = col_sum < 30 #100
     Rkeep = fullR_sparse[:, ~rejIdx]
 
     col_norm = np.sqrt(Rkeep.power(2).sum(axis=0)).A1
@@ -365,10 +405,22 @@ def process_channel(channel, session):
 
     regLabelsNew = [regLabels[int(r) - 1] for r in np.unique(regIdx_kept)]
 
+    # per-family pre-window (frames) aligned to regLabelsNew, + frame rate, so kernel plots can put
+    # their x-axis in seconds relative to the event (lag column c -> (c - pre_frames)/frame_rate s).
+    lag_pre_frames = np.array([family_pre_frames.get(lab, 0) for lab in regLabelsNew], dtype=int)
+
     save_npz(os.path.join(SAVE_PATH, f'{designMatID}_dMatProcessed_sparse.npz'), fullR_proc)
     np.savez(os.path.join(SAVE_PATH, f'{designMatID}_dMatProcessed_metadata.npz'),
-             regIdx=regIdx_kept, regLabels=np.array(regLabelsNew, dtype=object))
+             regIdx=regIdx_kept, regLabels=np.array(regLabelsNew, dtype=object),
+             lag_pre_frames=lag_pre_frames, frame_rate=NATIVE_FS // DOWNSAMPLE_FACTOR)
     print(f'Saved processed -> {SAVE_PATH}/{designMatID}_dMatProcessed_sparse.npz')
+
+    # Save the DOWNSAMPLED neural target so FittingGLM fits against a target aligned to the design's
+    # row rate
+    np.savez(os.path.join(SAVE_PATH, f'{designMatID}_neural_downsampled.npz'),
+             data=neural_data, frame_rate=NATIVE_FS // DOWNSAMPLE_FACTOR)
+    print(f'Saved downsampled neural target ({neural_data.shape[0]} rows) -> '
+          f'{SAVE_PATH}/{designMatID}_neural_downsampled.npz')
 
     # =========================================================================================
     # Diagnostic - QR rank check via the Gram matrix (reports redundant groups; not fitted)
@@ -432,6 +484,7 @@ if __name__ == '__main__':
                          partition=SLURM_PARTITION,
                          n_workers=n_workers,
                          mem_per_worker=MEM_PER_WORKER,
+                         setup_timeout=600,   # busy cluster: wait up to 10 min for SLURM to allocate
                          write_worker_results=False,   # workers save their own npz; nothing to collect
                          setup_interactive=False) as pmap:
             pmap.compute()

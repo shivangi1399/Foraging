@@ -4,7 +4,7 @@ Examine the fitted GLM for every session/channel.
 =============================================================================================
 Pipeline position: step 5 (see README.md). For every session/channel, loads the fit pickle
 written by FittingGLM.py and plots observed vs predicted neural activity over a short window,
-saving a PNG into the plots tree (mirroring the results tree but rooted in plots_dir, like
+saving a PDF into the plots tree (mirroring the results tree but rooted in plots_dir, like
 AnalyzeRedundancySubsample.py). Run after the fit (step 4) finishes.
 
 Light / login-node script (no acme): `python ExamineFit.py`.
@@ -35,9 +35,12 @@ CHANNELS = None
 # folder (use the largest sample count if several exist). Set to pin a specific sample count.
 N_TIMEPOINTS = None
 
-# Window (in frames) of the observed/predicted trace to plot.
-START_TIME = 10000
-WINDOW = 1500
+# Window (in SECONDS) of the observed/predicted trace to plot. Converted to frames per channel using
+# the frame_rate saved with the target, so it stays fixed in real time regardless of DOWNSAMPLE_FACTOR
+# (and is clamped to the recording length below).
+START_SEC = 100.0
+WINDOW_SEC = 15.0
+FRAME_RATE_FALLBACK = 100   # Hz, used only if the target npz predates the frame_rate field
 
 
 def discover_channels(session):
@@ -86,16 +89,26 @@ def examine_channel(session, channel):
         res = pickle.load(f)
     alphas, mdl, preds, scores = res['alphas'], res['mdl'], res['preds'], res['scores']
 
-    # Load in the neural data
-    neural_data = np.load(os.path.join(SESSION_ROOT, "neural_data.npz"))['data']
+    # Load the DOWNSAMPLED neural target (design's row rate), matching FittingGLM.py so it aligns
+    # with preds; the raw neural_data.npz is at NATIVE_FS and would be 10x too long for the overlay.
+    neural_path = SAVE_PATH / f"{designMatID}_neural_downsampled.npz"
+    if not neural_path.exists():
+        print(f'skip {designMatID}: no downsampled neural target (re-run DesignMatrix.py first)')
+        return
+    npz = np.load(neural_path)
+    neural_data = npz['data']
+    if neural_data.ndim == 1:
+        neural_data = neural_data[:, None]
     neural_data_fitted = neural_data[:n_timepoints, :]
+    frame_rate = int(npz['frame_rate']) if 'frame_rate' in npz.files else FRAME_RATE_FALLBACK
 
     print(f'\n===== {designMatID} ({n_timepoints} samples) =====')
     print(f"  R2: {scores:.4f}")
     print(f"  Alpha range: {np.min(alphas):.4f} to {np.max(alphas):.4f}")
 
-    start_time = START_TIME
-    end_time = start_time + WINDOW
+    # seconds -> frames at this channel's rate, clamped so we never index past the fitted length
+    start_time = min(int(START_SEC * frame_rate), n_timepoints - 1)
+    end_time = min(start_time + int(WINDOW_SEC * frame_rate), n_timepoints)
 
     fig = plt.figure(figsize=(12, 4))
     plt.plot(neural_data_fitted[start_time:end_time], label="Observed", linewidth=2)
@@ -108,10 +121,10 @@ def examine_channel(session, channel):
 
     fig_dir = Path(plots_dir) / session / f'channel{channel}_regressors' / 'results'
     fig_dir.mkdir(parents=True, exist_ok=True)
-    png_path = fig_dir / f'{designMatID}_{n_timepoints}samples_obs_vs_pred.png'
-    fig.savefig(png_path, dpi=120)
+    pdf_path = fig_dir / f'{designMatID}_{n_timepoints}samples_obs_vs_pred.pdf'
+    fig.savefig(pdf_path)
     plt.close(fig)
-    print(f'  saved plot -> {png_path}')
+    print(f'  saved plot -> {pdf_path}')
 
 
 if __name__ == '__main__':

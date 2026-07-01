@@ -3,7 +3,8 @@
 Fit the ridge-regression encoding model for every session/channel.
 =============================================================================================
 Pipeline position: step 4 (see README.md). For each channel, loads the processed design matrix
-({designMatID}_dMatProcessed_*) and neural_data.npz, column-normalises the design, picks the
+({designMatID}_dMatProcessed_*) and the downsampled neural target ({designMatID}_neural_downsampled.npz,
+written by DesignMatrix.py so target + design share a row rate), column-normalises the design, picks the
 ridge penalty per target with ridge_MML, fits Ridge(fit_intercept=False) with 10-fold CV, and
 saves R^2 + model/preds to {designMatID}_{n_timepoints}samples.pkl.
 
@@ -20,6 +21,7 @@ Run in the warping env (needs acme: `conda install -c conda-forge esi-acme`).
 """
 
 import os
+import sys
 import re
 import glob
 import warnings
@@ -33,6 +35,8 @@ from sklearn.model_selection import cross_val_predict
 from sklearn.metrics import r2_score
 
 from acme import ParallelMap
+
+sys.path.insert(1, '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/code/functions/GLM_fitting')
 from reg import ridge_MML
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -55,7 +59,7 @@ N_TIMEPOINTS = None   # e.g. 1000000
 # per-core-mem partition acme turns MEM_PER_WORKER into enough cores to feed n_jobs=-1. 
 SLURM_PARTITION = '96GB'
 MAX_WORKERS = 100
-MEM_PER_WORKER = '500GB'
+MEM_PER_WORKER = '96GB'
 
 
 def discover_channels(session):
@@ -102,8 +106,15 @@ def fit_channel(channel, session):
     regIdx = meta["regIdx"]
     regLabels = meta["regLabels"]
 
-    # Load in the neural data
-    neural_data = np.load(os.path.join(SESSION_ROOT, "neural_data.npz"))['data']
+    # Load the DOWNSAMPLED neural target written by DesignMatrix.py -- it is aligned to the design's
+    # row rate
+    neural_path = os.path.join(SAVE_PATH, f"{designMatID}_neural_downsampled.npz")
+    if not os.path.exists(neural_path):
+        print(f"skip {designMatID}: no downsampled neural target (re-run DesignMatrix.py first)")
+        return
+    neural_data = np.load(neural_path)['data']
+    if neural_data.ndim == 1:
+        neural_data = neural_data[:, None]   # ridge_MML expects a 2D (n_samples x n_targets) target
 
     n_timepoints = neural_data.shape[0] if N_TIMEPOINTS is None else N_TIMEPOINTS
 
@@ -168,6 +179,7 @@ if __name__ == '__main__':
                          partition=SLURM_PARTITION,
                          n_workers=n_workers,
                          mem_per_worker=MEM_PER_WORKER,
+                         setup_timeout=600,   # busy cluster: wait up to 10 min for SLURM to allocate
                          write_worker_results=False,   # workers save their own pkl; nothing to collect
                          setup_interactive=False) as pmap:
             pmap.compute()

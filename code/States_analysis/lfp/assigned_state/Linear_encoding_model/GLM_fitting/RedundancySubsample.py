@@ -60,9 +60,9 @@ MIN_ROWS_PER_COL_RATIO = 3
 # the heavy point is factor=1 (densifies the FULL raw matrix + QR workspace), which at 100 Hz can
 # reach the low tens of GB. Bump MEM_PER_WORKER / partition tier if a worker OOMs, or drop factor 1
 # from DOWNSCALE_FACTORS (its exact full-matrix verdict is already printed by DesignMatrix.py).
-SLURM_PARTITION = '16GBS'
+SLURM_PARTITION = '96GBS'
 MAX_WORKERS = 100
-MEM_PER_WORKER = '16GB'
+MEM_PER_WORKER = '96GB'
 
 # Validate config early
 if not (0 < REPEATS <= 1):
@@ -232,6 +232,7 @@ if __name__ == '__main__':
                          partition=SLURM_PARTITION,
                          n_workers=n_workers,
                          mem_per_worker=MEM_PER_WORKER,
+                         setup_timeout=600,   # busy cluster: wait up to 10 min for SLURM to allocate
                          write_worker_results=False,   # workers write their own jsonl; nothing to collect
                          setup_interactive=False) as pmap:
             pmap.compute()

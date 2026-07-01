@@ -5,7 +5,7 @@ Summarise the redundancy diagnostic (required step 3b).
 Pipeline position: step 3b (see README.md). For every session/channel, reads the .jsonl that
 RedundancySubsample.py wrote into that channel's results/ folder, then per channel: plots how
 many columns get flagged redundant vs downscale_factor and how stable the redundant set is across
-subsamples (Jaccard overlap). Saves a PNG next to the jsonl and prints the Jaccard table.
+subsamples (Jaccard overlap). Saves a PDF into the plots tree and prints the Jaccard table.
 Run after the RedundancySubsample sweep (step 3a) finishes.
 
 Light / login-node script (no acme): `python AnalyzeRedundancySubsample.py`. Set DOWNSCALE_METHOD
@@ -17,6 +17,7 @@ import re
 import glob
 from pathlib import Path
 from itertools import combinations
+from collections import Counter
 
 import pandas as pd
 import matplotlib
@@ -87,10 +88,35 @@ def analyze_channel(session, channel):
     plt.tight_layout()
     fig_dir = Path(plots_dir) / session / f'channel{channel}_regressors' / 'results'
     fig_dir.mkdir(parents=True, exist_ok=True)
-    png_path = fig_dir / f'{designMatID}_redundancy_{DOWNSCALE_METHOD}.png'
-    fig.savefig(png_path, dpi=120)
+    pdf_path = fig_dir / f'{designMatID}_redundancy_{DOWNSCALE_METHOD}.pdf'
+    fig.savefig(pdf_path)
     plt.close(fig)
-    print(f'  saved plot -> {png_path}')
+    print(f'  saved plot -> {pdf_path}')
+
+    # which regressor GROUPS get flagged redundant, and how consistently across subsamples.
+    # NOTE: names come from RedundancySubsample.py's `redundant_regs`; trust the family
+    # (difficulty / movement / state / correctness), not the exact level -- which specific
+    # level of a collinear set QR picks is arbitrary.
+    n = len(df)
+    overall = Counter()
+    for regs in df['redundant_regs']:
+        overall.update(set(regs))
+    if overall:
+        print(f'  regressor groups flagged redundant (out of {n} subsamples):')
+        for reg, k in overall.most_common():
+            print(f'    {reg:24s} {k:3d}/{n}  ({100 * k / n:5.1f}%)')
+        # per-factor breakdown (the redundant set that survives to the biggest factor is the
+        # most trustworthy -- fewest rows, so only genuine dependence still shows up)
+        print('  by downscale_factor:')
+        for f in sorted(df['downscale_factor'].unique()):
+            sub = df[df['downscale_factor'] == f]
+            c = Counter()
+            for regs in sub['redundant_regs']:
+                c.update(set(regs))
+            flagged = ', '.join(f'{r}({k}/{len(sub)})' for r, k in c.most_common()) or 'none'
+            print(f'    factor {f:>3}: {flagged}')
+    else:
+        print('  no regressor groups flagged redundant in any subsample')
 
     # stability of the redundant set across subsamples (Jaccard overlap)
     overlap = []
