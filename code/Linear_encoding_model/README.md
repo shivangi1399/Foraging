@@ -75,9 +75,7 @@ One mechanism for the heavy steps:
 
   Step 4 (`FittingGLM.py`) is the heavy one: the design is ~1.6M samples × thousands of columns and
   `ridge_MML` densifies it (`.toarray()`), so each worker needs a **big-memory, multi-core** node —
-  `MEM_PER_WORKER` in the hundreds of GB and a per-core-mem partition so `sklearn n_jobs=-1` gets
-  several cores. This replaces the old single-job `FittingGLM.sh` (kept only as a reference for the
-  resource request; the ACME path is now the way to run step 4).
+  `MEM_PER_WORKER` in the hundreds of GB.
 
 Steps 3b, 5 and 6b are light and run directly on the login node (no acme).
 
