@@ -63,6 +63,7 @@ LFP analyses locked to when a stimulus enters/leaves each channel's receptive fi
 Ridge-regression GLM predicting each channel's LFP from time-lagged task-event kernels (trial/stimulus/reward/block/saccade onsets, RF entries, and per-trial cognitive/state regressors). Per channel it reports each regressor family's kernel, its unique cross-validated contribution (`dR2`), and per-lag significance from a circular-shift permutation test.
 
 ## Shared functions (`code/functions/`)
+- Contains all the functions.
 
 ## Software (`software/`)
 - **syncopy-matlab** — MATLAB interface for Syncopy data format.
