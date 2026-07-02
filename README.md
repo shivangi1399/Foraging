@@ -24,13 +24,15 @@ On each trial, two morphed visual stimuli are presented, and the subject must se
 Cognitive states are inferred from behavioral emissions (e.g., reaction times) using a hidden Markov model (external to this repo). The predicted state assignments are used to group trials for all downstream analyses.
 
 #### Behavioral (`code/States_analysis/beh/`)
-- **states_beh.py** — Characterizes predicted states: state durations, transition probabilities, trial outcomes (correct/incorrect/miss rates), RT distributions by state and difficulty, and state dynamics around block changes.
-- **states_beh_stats.py** — Chi-squared/Fisher's exact tests for trial outcome proportions, Mann-Whitney U tests for pairwise RT comparisons (Bonferroni corrected).
+- **states_beh_stats.py** — Characterizes predicted states: state durations, transition probabilities, trial outcomes (correct/incorrect/miss rates), RT distributions by state and difficulty, and state dynamics around block changes.
 
 #### LFP — assigned states (`code/States_analysis/lfp/assigned_state/`)
 - **erp_spectra_stats.py** — Core state-dependent LFP analysis. Computes trial-wise ERPs, power spectra (2-100 Hz, multitaper), and FOOOF aperiodic-corrected residual spectra per state. Runs nonparametric permutation tests (1000 permutations, max/min correction) between state pairs at single-channel, array, and merged-array levels.
+- **erp_spectra_stats_reward.py** / **erp_spectra_stats_RT.py** — Reward-onset- and RT-centered versions of the same ERP/spectra/FOOOF permutation tests.
+- **easy_hard_by_states.py** / **foraging_states.py** — State comparisons crossed with difficulty, and restricted to trials around block exits.
+- **decoding_timelock_probe.py** / **decoding_timelock_spectra.py** — Single-trial decoding of cognitive state from the time-domain LFP.
 - **coherence.py** — Trial-wise inter-array LFP coherence per state with permutation-based significance testing across frequency.
-- **state_lfp_fig.py** — Summary figures: ERP/spectra with significance masks, heatmaps, coherence comparisons, and frequency-band summaries.
+- **spectra_coh_fig.py** — Summary figures: ERP/spectra with significance masks, heatmaps, coherence comparisons, and frequency-band summaries.
 
 #### LFP — state probability (`code/States_analysis/lfp/state_prob/`)
 - **erp_spec_state_prob.ipynb** — ERP and spectral analysis using continuous state probabilities.
@@ -47,14 +49,20 @@ Determines whether each channel's receptive field overlaps with the visual stimu
 6. **RFoverlap_perc_collapse.py** — Plots the percentage of time each channel's RF overlaps with stimulus A vs B.
 7. **RF_map_flow.py** — Documents the HDF5 data structure and time alignment between mapping and neural data.
 
+### RF in/out LFP (`code/RF_In_Out/`)
+
+LFP analyses locked to when a stimulus enters/leaves each channel's receptive field (from the RF-to-stimulus mapping). **entry_triggered_average.py** computes the RF-entry-triggered LFP average with a trigger-shift permutation test; **erp_spectra_stats_rf_inout.py** compares ERPs/spectra between entry types; **RF_inout_*_raster.py** make per-channel/array in-vs-out rasters.
+
+### Saccades (`code/saccades/`)
+
+- **saccade_detect_beh/** — Attaches iRec eventmarkers to the U'n'Eye saccade detections (**add_eventmarkers.py**, **load_saccade_data.py**) and plots across-trial saccade rasters (**saccade_raster_trial.py**).
+- **saccade_lfp/** — Saccade-locked LFP: **saccade_triggered_average.py** (STA with a per-time-point significance test), **saccade_erp_rf_split.py** (STA split by the pre→post RF-content transition), and **saccade_rf_transition_counts.py** (counts/histograms of those transitions).
+
+### Linear encoding model (`code/Linear_encoding_model/`)
+
+Ridge-regression GLM predicting each channel's LFP from time-lagged task-event kernels (trial/stimulus/reward/block/saccade onsets, RF entries, and per-trial cognitive/state regressors). Per channel it reports each regressor family's kernel, its unique cross-validated contribution (`dR2`), and per-lag significance from a circular-shift permutation test.
+
 ## Shared functions (`code/functions/`)
-- **eyetracking/** — Dome-to-retinal coordinate conversions, iRec eye tracker parsing, timestamp alignment.
-- **preprocessing/** — Ephys alignment, trial segmentation, spike sorting, DLC video tracking.
-- **rf_bar_mapping/** — RF mapping from bar stimuli with dome back-projection.
-- **decision_points/** — Log file parsing, reaction time extraction, signal detection metrics.
-- **unreal_logfile/** — Unreal Engine log file parser (`TextLog`).
-- **convert_unreal_coordinates/** — Coordinate transforms between Unreal and spherical systems.
-- **AutoGaussianGaborFits/** — MATLAB tools for Gaussian/Gabor surface fitting to RF data.
 
 ## Software (`software/`)
 - **syncopy-matlab** — MATLAB interface for Syncopy data format.
