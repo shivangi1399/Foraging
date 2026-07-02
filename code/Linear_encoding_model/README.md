@@ -28,8 +28,10 @@ folder under the results dir automatically (auto-discovered; pin a subset via th
                                    (ACME: channels parallelised, one worker each)
 5.  `GLM_fitting/ExamineFit.py`   -> observed-vs-predicted PDF (in the plots tree)
 6a. `GLM_fitting/RegressorContributions.py`        (ACME: channels parallelised, one worker each)
-                                   -> per-channel `..._contributions.npz` (betas, per-family dR2 + trace variance)
+                                   -> per-channel `..._contributions.npz` (betas, per-family dR2 + trace
+                                      variance, + per-lag significance: beta_sig / beta_thr / family_p)
 6b. `GLM_fitting/AnalyzeRegressorContributions.py` -> per-channel `_kernels.pdf` / `_traces.pdf` / `_summary.pdf`
+                                   (significant lags shaded on the kernels; significant families starred)
 
 Steps 3a–3b are the **required redundancy check**: they do NOT feed the fit directly, but you
 inspect 3b before fitting and, if a regressor group is flagged redundant, drop/merge it (or raise
@@ -41,7 +43,14 @@ Step 6 is the **optional contribution analysis** (run after a fit exists). 6a re
 `alphas` + sample count, refits to recover the weights — the step-4 pickle's `mdl` is unfitted
 because `cross_val_predict` clones the estimator — and per regressor family computes its per-lag
 kernel, its contribution-trace variance, and its unique `dR2` (cv-R^2 drop when that family's
-columns are dropped). 6b plots all three.
+columns are dropped). It also runs a **circular-shift permutation test** (`N_PERM`, default 1000):
+each permutation circularly shifts the target by a large random offset and refits the full ridge,
+and per family a max-statistic across its lags gives an FWER-controlled threshold (`beta_thr`), the
+significant design columns (`beta_sig`), and a family-level p-value (`family_p`) — same permutation
+logic as the saccade STA / RF-entry ETA. Because the null refits the *full* model, significance is
+"unique given the other regressors", so a lag can be flat here yet clear in the marginal STA/ETA
+(the `stim_onset` vs `target_in_RF` redundancy). Set `N_PERM=0` to skip. 6b plots all three and
+shades the significant lags on the kernels (stars significant families on the summary).
 
 Dependencies in one line: 0 -> 1 -> 2, then 1+2 -> 3 -> 3a -> 3b -> (act on it) -> 4 -> 5, and
 optionally 4 -> 6a -> 6b. (Step 2 reads `full_mask_reg.npz` from step 1; step 3 reads step 1's

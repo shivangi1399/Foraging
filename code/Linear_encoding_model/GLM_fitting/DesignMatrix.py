@@ -50,7 +50,14 @@ from reg import makeDesignMatrix_noTrials
 # ---------------------------
 # Config
 # ---------------------------
-results_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/full_length/GLM'
+# make glm_config (single source of truth for the output tree + sampling rate) importable
+for _d in (os.path.dirname(os.path.abspath(__file__)),
+           os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+    if os.path.exists(os.path.join(_d, 'glm_config.py')):
+        sys.path.insert(0, _d)
+        break
+from glm_config import RESULTS_DIR, NATIVE_FS, DOWNSAMPLE_FACTOR
+results_dir = RESULTS_DIR
 
 # Which session/channel pairs to build. None -> auto-discover from the results tree.
 SESSIONS = None   # e.g. ['20230214']; None -> every session with channel*_regressors folders
@@ -68,6 +75,13 @@ POST_TRIG_DUR = 0
 
 # Longest trial we model (LFP is zeroed after reward, so the trial->reward span bounds it)
 maxTrialDur = 5000  # ms
+
+# Post-onset window (s) for the per-trial cognitive/state boxcars (correct, diff_easy,
+# movement_left, state_*) AND the dummy null -- all eventType=1, trial-onset-aligned. They are
+# trial-onset-aligned contrasts, so match trial_onset's short kernel rather than the whole 5 s
+# trial: the multi-second tail was noise that overfit in-sample and dragged down the cv contribution
+# (same reasoning as the event kernels). Was maxTrialDur/1000 (=5 s).
+COG_POST_DUR = 1.0  # s
 
 # ---------------------------
 # Reference-level drops (dummy-variable trap)
@@ -95,8 +109,9 @@ DROP_REGRESSORS = {
 # ROW of the matrix -- so frameRate MUST equal the matrix row rate or every window is off
 # by the ratio. We therefore DERIVE frameRate = NATIVE_FS / DOWNSAMPLE_FACTOR below, so the
 # windows stay correct in real seconds for whatever downsampling you pick.
-NATIVE_FS = 1000           # Hz, rate the .npz regressors/neural_data were saved at
-DOWNSAMPLE_FACTOR = 10     # 1 = keep 1 kHz (frameRate 1000, big matrix); 10 = 100 Hz (10x smaller)
+# NATIVE_FS and DOWNSAMPLE_FACTOR are imported from glm_config (single source of truth for the rate)
+# so the design's row rate and the <rate>Hz output folder can never disagree -- change the rate there.
+# (10 = 100 Hz, 4 = 250 Hz; 1 keeps the full 1 kHz.)
 EVENT_DOWNSAMPLE = 'any'   # bin event impulses: 'any' (keep every event) | 'sum' (count per bin)
 NEURAL_DOWNSAMPLE = 'decimate' # bin the LFP: 'decimate' (anti-aliased) | 'mean' (bin-average) | 'subsample'
 
@@ -230,7 +245,7 @@ def process_channel(channel, session):
         preStimDur=0, postStimDur=0, preMoveDur=0, postMoveDur=0,
     )
 
-    opts['postTrigDur'] = maxTrialDur / 1000  # seconds
+    opts['postTrigDur'] = COG_POST_DUR  # seconds (cognitive/state boxcars + dummy null)
     opts['frameRate'] = NATIVE_FS // DOWNSAMPLE_FACTOR  # MUST equal the matrix row rate (else windows are wrong)
     opts['trialDur'] = opts['preTrigDur'] + opts['postTrigDur']
     opts['framesPerTrial'] = math.ceil(opts['trialDur'] * opts['frameRate'] + 1)
@@ -294,9 +309,12 @@ def process_channel(channel, session):
     rewardOnsetR, rewardOnsetIdx = event_block(rewardOnsetLabels, [reward_onset],
                                                pre_s=0.5, post_s=0)
 
+    # block change is a context switch the animal reacts TO, so use a short post-event kernel
+    # (like stim/trial_onset). The old 5 s pre-only window was 500 columns for ~50 events -> badly
+    # over-parameterised and the worst (most negative) dR2 in the design.
     blockOnsetLabels = ['block_onset']
     blockOnsetR, blockOnsetIdx = event_block(blockOnsetLabels, [block_onset],
-                                             pre_s=(maxTrialDur / 1000), post_s=0)
+                                             pre_s=0.2, post_s=1.0)
 
     # reaction time: response-locked kernel (tune the window as needed)
     reactionLabels = ['reaction_onset']

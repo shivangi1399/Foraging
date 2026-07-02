@@ -20,7 +20,7 @@ Each step reads the previous step's outputs, so trim STEPS to what you still nee
 IMPORTANT: 'neural'/'regressors' CREATE the channel folders, so on a fresh run the channels cannot be
 discovered from disk -- set ALL_CHANNELS to the full channel list below.
 
-Outputs (under SUMMARY_DIR):
+Outputs (under <results_dir>/<session>/_contribution_summaries -- i.e. INSIDE the date/session folder):
     array{N}_contributions.csv       one row per channel: full_R2 + dR2/trace_var per family
     all_arrays_contributions.csv     concatenated, with an `array` column
     all_arrays_dR2_by_family.csv     wide: rows = channels, cols = per-family dR2 (quick scan)
@@ -30,6 +30,7 @@ Run in the warping env:  python RunByArray.py
 
 import os
 import sys
+import glob
 import pickle
 import numpy as np
 import pandas as pd
@@ -58,7 +59,7 @@ import Regressors as rg
 N_ARRAYS = 6                      # matches erp_spectra_stats.py (np.array_split(channels, 6))
 CHANNELS_PER_ARRAY = 32           # probe layout: 6 arrays x 32 channels = 192 channels total
 STEPS = ['regressors', 'neural', 'design', 'fit', 'contributions']   # dependency order; trim to what you need
-ARRAYS_TO_RUN = [1]               # None -> all 6; or e.g. [1, 2] (1-based) to do a subset
+ARRAYS_TO_RUN = None               # None -> all 6; or e.g. [1, 2] (1-based) to do a subset
 DRY_RUN = False                   # True -> just print the array->channel split and exit
 
 # Set to None to instead discover from existing channel*_regressors folders (only valid AFTER
@@ -68,7 +69,13 @@ ALL_CHANNELS = list(range(N_ARRAYS * CHANNELS_PER_ARRAY))   # [0, 1, ..., 191]
 SESSIONS = ['20230214']
 
 results_dir = rc.results_dir      # same GLM tree for every step
-SUMMARY_DIR = os.path.join(results_dir, '_contribution_summaries')
+
+
+def summary_dir(session):
+    """Per-session summaries live INSIDE the date/session folder (never at the GLM root)."""
+    d = os.path.join(results_dir, session, '_contribution_summaries')
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 # -------------------------
@@ -93,34 +100,53 @@ def _regressors_cleanup(session, ctx):
         pass
 
 
+# output-marker helpers: the file a step writes for a channel (glob pattern). Used to tell which
+# channels actually succeeded, so only those are carried into the next step (many channels have no
+# RF point in the mapping file and legitimately fail the 'regressors' step).
+def _chdir(session, channel):
+    return os.path.join(results_dir, session, f'channel{channel}_regressors')
+def _resfile(session, channel, suffix):
+    return os.path.join(_chdir(session, channel), 'results', f'{session}_channel{channel}_{suffix}')
+
 # step name -> config. `extra_args(session, ctx)` returns the positional args ParallelMap broadcasts
 # after (channels, session); `prep`/`cleanup` are optional per-session hooks (run once, reused across
-# arrays, cleaned up at the very end).
+# arrays, cleaned up at the very end); `output(session, channel)` is the file glob that step produces.
 STEP_REGISTRY = {
-    'neural': dict(
-        worker=nd.process_channel, partition=nd.SLURM_PARTITION, mem=nd.MEM_PER_WORKER,
-        max_workers=nd.MAX_WORKERS,
-        extra_args=lambda session, ctx: (nd.lfp_data_dir, nd.log_file_dir, nd.results_dir),
-    ),
     'regressors': dict(
         worker=rg.process_channel, partition=rg.SLURM_PARTITION, mem=rg.MEM_PER_WORKER,
         max_workers=rg.MAX_WORKERS,
         prep=_regressors_prep, cleanup=_regressors_cleanup,
         extra_args=lambda session, ctx: (ctx['bundle_path'], rg.rf_base_dir, rg.results_dir),
+        output=lambda session, channel: os.path.join(_chdir(session, channel), 'full_mask_reg.npz'),
+    ),
+    'neural': dict(
+        worker=nd.process_channel, partition=nd.SLURM_PARTITION, mem=nd.MEM_PER_WORKER,
+        max_workers=nd.MAX_WORKERS,
+        extra_args=lambda session, ctx: (nd.lfp_data_dir, nd.log_file_dir, nd.results_dir),
+        output=lambda session, channel: os.path.join(_chdir(session, channel), 'neural_data.npz'),
     ),
     'design': dict(
         worker=dm.process_channel, partition=dm.SLURM_PARTITION, mem=dm.MEM_PER_WORKER,
         max_workers=dm.MAX_WORKERS, extra_args=lambda session, ctx: (),
+        output=lambda session, channel: _resfile(session, channel, 'dMatProcessed_sparse.npz'),
     ),
     'fit': dict(
         worker=fg.fit_channel, partition=fg.SLURM_PARTITION, mem=fg.MEM_PER_WORKER,
         max_workers=fg.MAX_WORKERS, extra_args=lambda session, ctx: (),
+        output=lambda session, channel: _resfile(session, channel, '*samples.pkl'),
     ),
     'contributions': dict(
         worker=rc.contributions_channel, partition=rc.SLURM_PARTITION, mem=rc.MEM_PER_WORKER,
         max_workers=rc.MAX_WORKERS, extra_args=lambda session, ctx: (),
+        output=lambda session, channel: _resfile(session, channel, 'contributions.npz'),
     ),
 }
+
+
+def survivors(step, session, channels):
+    """Channels whose output file for this step now exists (i.e. the step succeeded for them)."""
+    out = STEP_REGISTRY[step]['output']
+    return [ch for ch in channels if glob.glob(out(session, ch))]
 
 # per-session context for steps with a prep hook, built lazily and reused across arrays.
 _session_ctx = {}
@@ -151,15 +177,21 @@ def run_step(step, session, channels):
     extra = cfg['extra_args'](session, ctx)
     n_workers = min(cfg['max_workers'], len(channels))
     print(f"    [{step}] session {session}: {len(channels)} channels -> {n_workers} workers on '{cfg['partition']}'")
-    with ParallelMap(cfg['worker'], channels, session, *extra,
-                     n_inputs=len(channels),
-                     partition=cfg['partition'],
-                     n_workers=n_workers,
-                     mem_per_worker=cfg['mem'],
-                     setup_timeout=600,            # busy cluster: wait up to 10 min for SLURM
-                     write_worker_results=False,   # workers write their own npz/pkl
-                     setup_interactive=False) as pmap:
-        pmap.compute()
+    try:
+        with ParallelMap(cfg['worker'], channels, session, *extra,
+                         n_inputs=len(channels),
+                         partition=cfg['partition'],
+                         n_workers=n_workers,
+                         mem_per_worker=cfg['mem'],
+                         setup_timeout=600,            # busy cluster: wait up to 10 min for SLURM
+                         write_worker_results=False,   # workers write their own npz/pkl
+                         setup_interactive=False) as pmap:
+            pmap.compute()
+    except Exception as e:
+        # a partial failure (e.g. channels with no RF point) must NOT abort the whole run --
+        # the channels that succeeded still wrote their outputs; we prune to those afterwards.
+        print(f"    [{step}] session {session}: some tasks failed ({type(e).__name__}); continuing "
+              f"with whichever channels produced output")
 
 
 # -------------------------
@@ -177,11 +209,14 @@ def summarise_array(arr_idx, session_channels):
             continue
         c = np.load(f, allow_pickle=True)
         labels = [str(x) for x in c['group_labels']]
+        # per-family max-stat permutation p-value (absent in pre-significance npz files)
+        fam_p = c['family_p'] if 'family_p' in c.files else np.full(len(labels), np.nan)
         row = {'array': arr_idx, 'session': session, 'channel': channel,
                'full_R2': float(c['full_R2'])}
-        for lab, d, v in zip(labels, c['dR2'], c['trace_var']):
+        for lab, d, v, p in zip(labels, c['dR2'], c['trace_var'], fam_p):
             row[f'dR2::{lab}'] = float(d)
             row[f'tracevar::{lab}'] = float(v)
+            row[f'pval::{lab}'] = float(p)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -190,7 +225,6 @@ def summarise_array(arr_idx, session_channels):
 # Driver
 # -------------------------
 if __name__ == '__main__':
-    os.makedirs(SUMMARY_DIR, exist_ok=True)
     sessions = SESSIONS if SESSIONS is not None else list(nd.sessions)
 
     # Build the per-session array split up front and show it.
@@ -230,23 +264,36 @@ if __name__ == '__main__':
                 print("  no channels in this array, skipping")
                 continue
 
-            # run each requested step for this array's channels, one step at a time, per session
+            # run each requested step for this array's channels, one step at a time, per session.
+            # After each step, keep only the channels that actually produced output and carry those
+            # forward -- so channels that fail (e.g. no RF point) drop out instead of erroring every
+            # downstream step.
+            alive = {s: list(split[s][arr_idx - 1]) for s in sessions}
             for step in STEPS:
                 print(f"  -- step: {step}")
                 for s in sessions:
-                    run_step(step, s, split[s][arr_idx - 1])
+                    run_step(step, s, alive[s])
+                    kept = survivors(step, s, alive[s])
+                    if len(kept) < len(alive[s]):
+                        dropped = sorted(set(alive[s]) - set(kept))
+                        print(f"    [{step}] session {s}: {len(kept)}/{len(alive[s])} succeeded; "
+                              f"dropping {len(dropped)} channels {dropped}")
+                    alive[s] = kept
 
             # summarise this array's contributions (if that step is part of the run / already on disk)
             df = summarise_array(arr_idx, session_channels)
             if df.empty:
                 print(f"  ARRAY {arr_idx}: no contribution files to summarise")
                 continue
-            out = os.path.join(SUMMARY_DIR, f'array{arr_idx}_contributions.csv')
-            df.to_csv(out, index=False)
             all_summaries.append(df)
+            # write the per-array csv into each session's date folder (keeps it inside the session)
+            for s, df_s in df.groupby('session'):
+                df_s.to_csv(os.path.join(summary_dir(s), f'array{arr_idx}_contributions.csv'),
+                            index=False)
             dR2_cols = [c for c in df.columns if c.startswith('dR2::')]
             mean_dR2 = df[dR2_cols].mean().sort_values(ascending=False)
-            print(f"  ARRAY {arr_idx}: {len(df)} channels summarised -> {out}")
+            print(f"  ARRAY {arr_idx}: {len(df)} channels summarised -> "
+                  f"{[summary_dir(s) for s in df['session'].unique()]}")
             print(f"    mean full_R2 = {df['full_R2'].mean():.4f}")
             print(f"    top families by mean unique dR2: "
                   + ", ".join(f"{c.split('::')[1]}={mean_dR2[c]:+.4f}" for c in mean_dR2.index[:3]))
@@ -260,11 +307,14 @@ if __name__ == '__main__':
     # combined outputs
     if all_summaries:
         combined = pd.concat(all_summaries, ignore_index=True)
-        combined.to_csv(os.path.join(SUMMARY_DIR, 'all_arrays_contributions.csv'), index=False)
         dR2_cols = [c for c in combined.columns if c.startswith('dR2::')]
-        wide = combined[['array', 'session', 'channel'] + dR2_cols].copy()
-        wide.columns = ['array', 'session', 'channel'] + [c.split('::')[1] for c in dR2_cols]
-        wide.to_csv(os.path.join(SUMMARY_DIR, 'all_arrays_dR2_by_family.csv'), index=False)
-        print(f"\nWrote combined summaries -> {SUMMARY_DIR}")
+        # combined outputs also go inside each session's date folder
+        for s, df_s in combined.groupby('session'):
+            sd = summary_dir(s)
+            df_s.to_csv(os.path.join(sd, 'all_arrays_contributions.csv'), index=False)
+            wide = df_s[['array', 'session', 'channel'] + dR2_cols].copy()
+            wide.columns = ['array', 'session', 'channel'] + [c.split('::')[1] for c in dR2_cols]
+            wide.to_csv(os.path.join(sd, 'all_arrays_dR2_by_family.csv'), index=False)
+            print(f"\nWrote combined summaries for {s} -> {sd}")
     else:
         print("\nNo summaries produced.")

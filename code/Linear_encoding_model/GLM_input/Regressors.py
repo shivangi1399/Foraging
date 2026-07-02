@@ -46,7 +46,14 @@ import time_conversion as tc   # iRec <-> log time alignment (for saccade timing
 data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets'
 lfp_data_dir = os.path.join(data_dir, 'neural_data/stimAalign_cut/clean_full_length')
 log_file_dir = os.path.join(data_dir, 'raw_data')
-results_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/full_length/GLM'
+# make glm_config (single source of truth for the output tree + sampling rate) importable
+for _d in (os.path.dirname(os.path.abspath(__file__)),
+           os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+    if os.path.exists(os.path.join(_d, 'glm_config.py')):
+        sys.path.insert(0, _d)
+        break
+from glm_config import RESULTS_DIR
+results_dir = RESULTS_DIR
 rf_base_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/RF_VR_mapping/RFarea_stim'
 processed_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/states_analysis/processed' # reaction time (RT) per trial, in seconds
 

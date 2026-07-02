@@ -11,6 +11,7 @@ Light / login-node script (no acme): `python ExamineFit.py`.
 """
 
 import os
+import sys
 import re
 import glob
 import pickle
@@ -24,8 +25,15 @@ import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-results_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/full_length/GLM'
-plots_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/states_lfp/all_trials/full_length/GLM'
+# make glm_config (single source of truth for the output tree + sampling rate) importable
+for _d in (os.path.dirname(os.path.abspath(__file__)),
+           os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+    if os.path.exists(os.path.join(_d, 'glm_config.py')):
+        sys.path.insert(0, _d)
+        break
+from glm_config import RESULTS_DIR, PLOTS_DIR
+results_dir = RESULTS_DIR
+plots_dir = PLOTS_DIR
 
 # Which session/channel pairs to examine. None -> auto-discover from the results tree.
 SESSIONS = None

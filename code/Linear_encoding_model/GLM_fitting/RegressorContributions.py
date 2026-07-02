@@ -13,6 +13,18 @@ then quantifies how much each regressor FAMILY contributes:
   * dR2          - unique contribution: refit with each family's columns DROPPED (10-fold CV,
                    reusing the full-model alpha) and report the drop in cv-R^2 vs the full fit.
                    Credits a family only for what the others cannot explain. One refit per family.
+                   NOTE: the per-trial state levels (state_0, state_2, ...) are mutually-exclusive
+                   levels of ONE categorical factor, so they are MERGED into a single "state" family
+                   and dropped together -- otherwise each level is redundant with the others (+
+                   trial_onset) and its unique dR2 collapses to ~0 (a design artifact, not absence
+                   of state encoding).
+  * beta_sig /   - per-lag significance: a circular-shift permutation null (shift the target, refit
+    beta_thr /     the full ridge, repeat N_PERM times) gives, per family, a max-statistic threshold
+    family_p       across its lags (FWER-controlled). beta_sig marks the design columns whose |beta|
+                   beats it; family_p is the family-level max-stat permutation p-value. Because the
+                   null refits the FULL model, this is "unique given the other regressors" -- a lag
+                   can be non-significant here yet clear in the marginal STA/ETA (e.g. target_in_RF
+                   vs stim_onset). Set N_PERM=0 to skip.
 
 Writes {designMatID}_contributions.npz per channel. The per-timepoint contribution TRACES are not
 stored here (they are n_timepoints x n_families and large); AnalyzeRegressorContributions.py
@@ -26,6 +38,7 @@ Run in the warping env (needs acme: `conda install -c conda-forge esi-acme`).
 """
 
 import os
+import sys
 import re
 import glob
 import pickle
@@ -45,7 +58,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # -------------------------
 # Config
 # -------------------------
-results_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/states_analysis/states_lfp/all_trials/full_length/GLM'
+# make glm_config (single source of truth for the output tree + sampling rate) importable
+for _d in (os.path.dirname(os.path.abspath(__file__)),
+           os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+    if os.path.exists(os.path.join(_d, 'glm_config.py')):
+        sys.path.insert(0, _d)
+        break
+from glm_config import RESULTS_DIR
+results_dir = RESULTS_DIR
 
 # Which session/channel pairs to process. None -> auto-discover from the results tree (matches
 # DesignMatrix.py / FittingGLM.py).
@@ -59,8 +79,20 @@ N_TIMEPOINTS = None
 # Cross-validation folds for the reduced-model dR2 (match FittingGLM.py's cv=10).
 CV_FOLDS = 10
 
+# Per-lag significance via a circular-shift permutation null (set N_PERM=0 to skip). Each
+# permutation circularly shifts the neural target by a random offset >= PERM_MIN_SHIFT_S seconds
+# (>> the longest kernel, so the event->LFP link is broken while each signal's autocorrelation is
+# preserved) and refits the full ridge ONCE; per family we FWER-correct across its lags with a
+# max-statistic (as in the saccade STA / RF-entry ETA). Costs N_PERM extra single ridge fits per
+# channel (no CV) on top of the dR2 work -- budget the partition time accordingly.
+N_PERM = 1000
+ALPHA = 0.05
+PERM_MIN_SHIFT_S = 10.0    # min circular shift (s); must exceed the longest kernel window
+PERM_SEED = 0
+
 # SLURM / acme parallelisation: one worker per channel. The design stays sparse (no dense alpha
-# search), so this is lighter than step 4, but it runs N_families+1 ridge CV fits per channel.
+# search), so this is lighter than step 4, but it runs N_families+1 ridge CV fits per channel
+# plus N_PERM single ridge fits for the permutation significance.
 SLURM_PARTITION = '32GBS'
 MAX_WORKERS = 100
 MEM_PER_WORKER = '32GB'
@@ -160,16 +192,32 @@ def contributions_channel(channel, session):
     full_mdl.fit(design_norm, neural_data)
     betas = np.asarray(full_mdl.coef_).ravel()       # single target -> 1D over columns
 
-    # Regressor families (1-based ids), with a readable label each.
+    # Families to score. Normally one per regIdx id, BUT the per-trial state levels
+    # (state_0, state_2, ...) are mutually-exclusive levels of ONE categorical factor: with the
+    # near-empty levels dropped in DesignMatrix.py they nearly partition every trial, so scored
+    # separately each state is redundant with the others (+ trial_onset) and its unique dR2
+    # collapses to ~0 (even dipping below the dummy null). We MERGE all state_* levels into a single
+    # "state" family so the reduced-model drop removes them together and dR2 reports the honest
+    # unique contribution of behavioural state as a factor. (family id = -1 marks the merged state.)
     group_ids = np.unique(regIdx)
-    group_labels = np.array([regLabels[int(g) - 1] for g in group_ids])
+    families = []                                    # (label, family-id, column-mask over design)
+    state_cols = np.zeros(regIdx.shape, dtype=bool)
+    for g in group_ids:
+        lab = str(regLabels[int(g) - 1])
+        if lab.startswith('state_'):
+            state_cols |= (regIdx == g)
+        else:
+            families.append((lab, int(g), regIdx == g))
+    if state_cols.any():
+        families.append(('state', -1, state_cols))
+
+    group_labels = np.array([lab for lab, _, _ in families])
+    group_family_ids = np.array([gid for _, gid, _ in families], dtype=int)
 
     # --- Per-family trace variance (cheap) and unique dR2 (one reduced refit each) ---
-    trace_var = np.full(group_ids.size, np.nan)
-    dR2 = np.full(group_ids.size, np.nan)
-    for j, g in enumerate(group_ids):
-        cols_g = (regIdx == g)
-
+    trace_var = np.full(len(families), np.nan)
+    dR2 = np.full(len(families), np.nan)
+    for j, (lab, _gid, cols_g) in enumerate(families):
         # contribution trace = this family's columns @ its weights; variance summarises its swing.
         contrib = np.asarray(design_norm[:, cols_g] @ betas[cols_g]).ravel()
         trace_var[j] = float(np.var(contrib))
@@ -182,7 +230,39 @@ def contributions_channel(channel, session):
         )
         reduced_R2 = r2_score(neural_data, reduced_preds)
         dR2[j] = float(full_R2 - reduced_R2)
-        print(f"{designMatID}:   {group_labels[j]:<24} dR2={dR2[j]:+.4f}  var={trace_var[j]:.4g}")
+        print(f"{designMatID}:   {lab:<24} dR2={dR2[j]:+.4f}  var={trace_var[j]:.4g}")
+
+    # --- Per-lag significance: circular-shift permutation null, per-family max-stat FWER ---
+    # Shift the target by a large random offset (breaks event->LFP link, keeps autocorrelation),
+    # refit the full ridge, and per family collect max|null beta| over its lags. A lag is
+    # significant if |real beta| beats the (1-ALPHA) quantile of that family's max-null; family_p is
+    # the max-stat permutation p-value. One refit per permutation covers every family/lag at once.
+    beta_thr = np.full(len(families), np.nan)      # per family: (1-ALPHA) quantile of max|null beta|
+    beta_sig = np.zeros(betas.shape, dtype=bool)   # per design column
+    family_p = np.full(len(families), np.nan)      # per family: max-stat permutation p-value
+    if N_PERM > 0:
+        frame_rate = int(meta['frame_rate']) if 'frame_rate' in meta.files else 100
+        rng = np.random.default_rng(PERM_SEED)
+        n_rows = design_norm.shape[0]
+        min_shift = min(max(int(PERM_MIN_SHIFT_S * frame_rate), 1), max(1, n_rows // 4))
+        perm_mdl = Ridge(alpha=alphas, fit_intercept=False)
+        fam_maxnull = np.zeros((len(families), N_PERM))
+        print(f"{designMatID}: running {N_PERM} circular-shift permutations "
+              f"(min shift {min_shift} frames) ...")
+        for p in range(N_PERM):
+            shift = int(rng.integers(min_shift, n_rows - min_shift))
+            perm_mdl.fit(design_norm, np.roll(neural_data, shift, axis=0))
+            b_null = np.asarray(perm_mdl.coef_).ravel()
+            for j, (_lab, _gid, cols_g) in enumerate(families):
+                fam_maxnull[j, p] = np.max(np.abs(b_null[cols_g])) if cols_g.any() else 0.0
+        for j, (lab, _gid, cols_g) in enumerate(families):
+            thr = float(np.percentile(fam_maxnull[j], 100 * (1 - ALPHA)))
+            beta_thr[j] = thr
+            beta_sig[cols_g] = np.abs(betas[cols_g]) > thr
+            real_max = float(np.max(np.abs(betas[cols_g]))) if cols_g.any() else 0.0
+            family_p[j] = float(np.mean(fam_maxnull[j] >= real_max))
+            print(f"{designMatID}:   {lab:<24} thr={thr:.4g}  "
+                  f"{int(beta_sig[cols_g].sum())}/{int(cols_g.sum())} lags sig  p={family_p[j]:.3g}")
 
     out_file = os.path.join(SAVE_PATH, f"{designMatID}_contributions.npz")
     np.savez_compressed(
@@ -193,10 +273,15 @@ def contributions_channel(channel, session):
         alphas=np.asarray(alphas),
         full_R2=full_R2,
         n_timepoints=n_timepoints,
-        group_ids=group_ids,
+        group_ids=group_family_ids,
         group_labels=group_labels,
         dR2=dR2,
         trace_var=trace_var,
+        beta_sig=beta_sig,
+        beta_thr=beta_thr,
+        family_p=family_p,
+        n_perm=N_PERM,
+        alpha_sig=ALPHA,
     )
     print(f"{designMatID}: wrote contributions -> {out_file}")
     return out_file
