@@ -88,6 +88,24 @@ def discover_sessions():
     return out
 
 
+def session_blocked_folds(session_id, n_folds):
+    """CV folds that never straddle a session boundary (POOLED fits only). Within each session the
+    (contiguous) rows are split into n_folds blocks; fold k = block-k pooled across sessions, so every
+    fold trains/tests within-session and no session's tail leaks into another. Returns [(train,test)]."""
+    session_id = np.asarray(session_id).ravel()
+    idx = np.arange(session_id.size)
+    test_parts = [[] for _ in range(n_folds)]
+    for s in np.unique(session_id):
+        rows = idx[session_id == s]
+        for k, block in enumerate(np.array_split(rows, n_folds)):
+            test_parts[k].append(block)
+    folds = []
+    for k in range(n_folds):
+        test = np.concatenate(test_parts[k]) if test_parts[k] else np.array([], dtype=int)
+        folds.append((np.setdiff1d(idx, test), test))
+    return folds
+
+
 # -------------------------
 # Per-channel worker: fit one channel
 # -------------------------
@@ -112,6 +130,10 @@ def fit_channel(channel, session):
 
     regIdx = meta["regIdx"]
     regLabels = meta["regLabels"]
+    # POOLED (multi-session) designs carry a per-row session_id (written by AssemblePooled.py); when
+    # present we fit with session-aware CV so folds don't straddle a session seam. Absent -> single
+    # session, everything below behaves exactly as before.
+    session_id = meta['session_id'] if 'session_id' in meta.files else None
 
     # Load the DOWNSAMPLED neural target written by DesignMatrix.py -- it is aligned to the design's
     # row rate
@@ -128,6 +150,8 @@ def fit_channel(channel, session):
     # Filter the neural data and design matrix to the number of time points we are using
     neural_data = neural_data[:n_timepoints]
     fullR_sparse = fullR_sparse[:n_timepoints]
+    if session_id is not None:
+        session_id = np.asarray(session_id).ravel()[:n_timepoints]
 
     print(f"{designMatID}: neural_data shape:", neural_data.shape)
     print(f"{designMatID}: fullR_sparse shape:", fullR_sparse.shape)
@@ -142,7 +166,8 @@ def fit_channel(channel, session):
     alphas = ridge_MML(neural_data, design_norm.toarray(), regress=False)
 
     mdl = Ridge(alpha=alphas, fit_intercept=False)
-    preds = cross_val_predict(mdl, design_norm, neural_data, cv=10, n_jobs=-1)
+    cv = session_blocked_folds(session_id, 10) if session_id is not None else 10
+    preds = cross_val_predict(mdl, design_norm, neural_data, cv=cv, n_jobs=-1)
     scores = r2_score(neural_data, preds)
 
     print(f"{designMatID}: R2: {scores:.4f}")

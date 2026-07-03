@@ -25,7 +25,7 @@ Outputs (under <results_dir>/<session>/_contribution_summaries -- i.e. INSIDE th
     all_arrays_contributions.csv     concatenated, with an `array` column
     all_arrays_dR2_by_family.csv     wide: rows = channels, cols = per-family dR2 (quick scan)
 
-Run in the warping env:  python RunByArray.py
+Run in the warping env:  python ArrayRun.py
 """
 
 import os
@@ -52,6 +52,7 @@ import FittingGLM as fg
 import RegressorContributions as rc
 import NeuralData as nd
 import Regressors as rg
+import AssemblePooled as ap
 
 # -------------------------
 # Config
@@ -66,7 +67,17 @@ DRY_RUN = False                   # True -> just print the array->channel split 
 # 'neural'/'regressors' have run).
 ALL_CHANNELS = list(range(N_ARRAYS * CHANNELS_PER_ARRAY))   # [0, 1, ..., 191]
 # Sessions to run. None -> use NeuralData's session config (works before any folders exist).
-SESSIONS = ['20230214']
+SESSIONS = ['20230203', '20230208', '20230209', '20230213', '20230214']
+
+# --- Pooled (multi-session) mode -----------------------------------------------------------------
+# POOL_SESSIONS=False (default): fit EACH session in SESSIONS separately (the original behaviour).
+# POOL_SESSIONS=True: additionally CONCATENATE all of SESSIONS into one fit per electrode -- the
+#   input steps ('regressors'/'neural'/'design') still run per session, then per array we ASSEMBLE
+#   the pooled design (AssemblePooled.py) and run 'fit'/'contributions' on the pooled "session".
+POOL_SESSIONS = True
+POOLED_SESSION = 'pooled_all'                      # None -> 'pooled_<first>_<last>' of SESSIONS.
+_INPUT_STEPS = ['regressors', 'neural', 'design']   # run per real session
+_FIT_STEPS = ['fit', 'contributions']               # run on the pooled session when POOL_SESSIONS
 
 results_dir = rc.results_dir      # same GLM tree for every step
 
@@ -195,6 +206,42 @@ def run_step(step, session, channels):
 
 
 # -------------------------
+# Pooled mode: assemble one array's channels across sessions into the pooled "session" folder
+# -------------------------
+def run_assemble(sessions, channels, pooled_session):
+    """acme submission: build the pooled (concatenated) design for each channel of this array."""
+    if not channels:
+        return
+    n_workers = min(ap.MAX_WORKERS, len(channels))
+    print(f"    [assemble] {sessions} -> '{pooled_session}': {len(channels)} channels -> "
+          f"{n_workers} workers on '{ap.SLURM_PARTITION}'")
+    try:
+        with ParallelMap(ap.assemble_channel, channels, sessions, pooled_session,
+                         n_inputs=len(channels),
+                         partition=ap.SLURM_PARTITION,
+                         n_workers=n_workers,
+                         mem_per_worker=ap.MEM_PER_WORKER,
+                         setup_timeout=600,
+                         write_worker_results=False,
+                         setup_interactive=False) as pmap:
+            pmap.compute()
+    except Exception as e:
+        print(f"    [assemble] some channels failed ({type(e).__name__}); continuing with those that "
+              f"produced a pooled design")
+
+
+def pooled_survivors(pooled_session, channels):
+    """Channels whose pooled processed design now exists under the pooled-session folder."""
+    out = []
+    for ch in channels:
+        f = os.path.join(results_dir, pooled_session, f'channel{ch}_regressors', 'results',
+                         f'{pooled_session}_channel{ch}_dMatProcessed_sparse.npz')
+        if os.path.exists(f):
+            out.append(ch)
+    return out
+
+
+# -------------------------
 # Build the contribution summary for one array (reads each channel's contributions.npz)
 # -------------------------
 def summarise_array(arr_idx, session_channels):
@@ -254,6 +301,13 @@ if __name__ == '__main__':
     if DRY_RUN:
         raise SystemExit("DRY_RUN: printed the array split only.")
 
+    pooled_session = None
+    if POOL_SESSIONS:
+        if len(sessions) < 2:
+            raise SystemExit(f"POOL_SESSIONS=True needs >=2 sessions; got {sessions}")
+        pooled_session = POOLED_SESSION or f'pooled_{sessions[0]}_{sessions[-1]}'
+        print(f"POOL_SESSIONS: input steps per session, then pooled fit under '{pooled_session}'")
+
     arr_indices = ARRAYS_TO_RUN if ARRAYS_TO_RUN is not None else list(range(1, N_ARRAYS + 1))
     all_summaries = []
     try:
@@ -269,7 +323,10 @@ if __name__ == '__main__':
             # forward -- so channels that fail (e.g. no RF point) drop out instead of erroring every
             # downstream step.
             alive = {s: list(split[s][arr_idx - 1]) for s in sessions}
-            for step in STEPS:
+            # In pooled mode the input steps still run per session; the fit steps run once on the
+            # pooled session (below). In normal mode every requested step runs per session.
+            steps_here = [st for st in STEPS if st in _INPUT_STEPS] if POOL_SESSIONS else STEPS
+            for step in steps_here:
                 print(f"  -- step: {step}")
                 for s in sessions:
                     run_step(step, s, alive[s])
@@ -280,8 +337,26 @@ if __name__ == '__main__':
                               f"dropping {len(dropped)} channels {dropped}")
                     alive[s] = kept
 
-            # summarise this array's contributions (if that step is part of the run / already on disk)
-            df = summarise_array(arr_idx, session_channels)
+            if POOL_SESSIONS:
+                # only channels whose design survived in EVERY session can be concatenated
+                common = sorted(set.intersection(*[set(alive[s]) for s in sessions]))
+                if not common:
+                    print(f"  ARRAY {arr_idx}: no channel has a design in all {len(sessions)} sessions; skip")
+                    continue
+                run_assemble(sessions, common, pooled_session)
+                pooled_alive = pooled_survivors(pooled_session, common)
+                print(f"    [assemble] {len(pooled_alive)}/{len(common)} channels pooled")
+                for step in [st for st in STEPS if st in _FIT_STEPS]:
+                    print(f"  -- step: {step} (pooled session {pooled_session})")
+                    run_step(step, pooled_session, pooled_alive)
+                    kept = survivors(step, pooled_session, pooled_alive)
+                    if len(kept) < len(pooled_alive):
+                        print(f"    [{step}] pooled: {len(kept)}/{len(pooled_alive)} succeeded")
+                    pooled_alive = kept
+                df = summarise_array(arr_idx, [(pooled_session, ch) for ch in pooled_alive])
+            else:
+                # summarise this array's contributions (if that step is part of the run / already on disk)
+                df = summarise_array(arr_idx, session_channels)
             if df.empty:
                 print(f"  ARRAY {arr_idx}: no contribution files to summarise")
                 continue

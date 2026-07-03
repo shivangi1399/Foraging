@@ -132,6 +132,61 @@ def find_fit(SAVE_PATH, designMatID):
     return path, n_timepoints
 
 
+def session_blocked_folds(session_id, n_folds):
+    """CV folds that never straddle a session boundary (POOLED fits only): within each session split
+    the contiguous rows into n_folds blocks; fold k = block-k pooled across sessions. See FittingGLM."""
+    session_id = np.asarray(session_id).ravel()
+    idx = np.arange(session_id.size)
+    test_parts = [[] for _ in range(n_folds)]
+    for s in np.unique(session_id):
+        rows = idx[session_id == s]
+        for k, block in enumerate(np.array_split(rows, n_folds)):
+            test_parts[k].append(block)
+    folds = []
+    for k in range(n_folds):
+        test = np.concatenate(test_parts[k]) if test_parts[k] else np.array([], dtype=int)
+        folds.append((np.setdiff1d(idx, test), test))
+    return folds
+
+
+def build_shift_schedule(n_rows, session_id, min_shift, n_perm, seed):
+    """Deterministic per-permutation circular shifts, generated ONLY from (seed, row layout) so they
+    are IDENTICAL across every channel that shares the same layout (all channels of a session, or all
+    pooled electrodes over the same sessions have the same n_rows / session lengths). That makes
+    "permutation p" the SAME shuffle on every channel -- and, crucially, shifting all channels by the
+    same offset keeps them mutually aligned, so each shuffle PRESERVES the cross-channel correlation.
+    That is what lets an array-level test pool the per-channel nulls by permutation index and stay
+    well-calibrated (not anti-conservative).
+
+    Returns (roll(y, p) -> shifted target, shifts) where `shifts` is the stored schedule:
+      * single session: shape (n_perm,)      -- one offset per permutation
+      * pooled:         shape (n_sess, n_perm) -- per-session offsets (rows ordered by unique session id)
+    """
+    rng = np.random.default_rng(seed)
+    if session_id is None:
+        shifts = rng.integers(min_shift, n_rows - min_shift, size=n_perm)
+
+        def roll(y, p):
+            return np.roll(y, int(shifts[p]), axis=0)
+        return roll, shifts
+
+    sess = np.unique(session_id)
+    rows_by_s = [np.where(session_id == s)[0] for s in sess]
+    sched = np.zeros((len(sess), n_perm), dtype=int)
+    for i, rows in enumerate(rows_by_s):
+        n = rows.size
+        lo = min(min_shift, max(1, n // 4))
+        hi = max(lo + 1, n - lo)
+        sched[i] = rng.integers(lo, hi, size=n_perm)
+
+    def roll(y, p):
+        out = y.copy()
+        for i, rows in enumerate(rows_by_s):
+            out[rows] = np.roll(y[rows], int(sched[i, p]), axis=0)
+        return out
+    return roll, sched
+
+
 def normalise_design(fullR_sparse):
     """Column-normalise the design exactly as FittingGLM.py does."""
     design_mean = np.array(fullR_sparse.mean(axis=0)).ravel()
@@ -168,6 +223,9 @@ def contributions_channel(channel, session):
     )
     regIdx = np.asarray(meta["regIdx"]).ravel()      # 1-based regressor id per column
     regLabels = np.asarray(meta["regLabels"]).ravel()
+    # POOLED (multi-session) designs carry a per-row session_id (from AssemblePooled.py): drives
+    # session-aware CV folds + within-session permutation below. Absent -> single-session, unchanged.
+    session_id = np.asarray(meta['session_id']).ravel() if 'session_id' in meta.files else None
 
     # Load the DOWNSAMPLED neural target written by DesignMatrix.py -- aligned to the design's row
     # rate, exactly as FittingGLM.py fits it. (The raw neural_data.npz is at NATIVE_FS and would be a
@@ -183,6 +241,9 @@ def contributions_channel(channel, session):
     # Match the step-4 fit window exactly.
     neural_data = neural_data[:n_timepoints]
     fullR_sparse = fullR_sparse[:n_timepoints]
+    if session_id is not None:
+        session_id = session_id[:n_timepoints]
+    cv = session_blocked_folds(session_id, CV_FOLDS) if session_id is not None else CV_FOLDS
     design_norm = normalise_design(fullR_sparse)
 
     print(f"{designMatID}: design {design_norm.shape}, full cv-R2 {full_R2:.4f}")
@@ -226,7 +287,7 @@ def contributions_channel(channel, session):
         reduced = design_norm[:, ~cols_g]
         reduced_preds = cross_val_predict(
             Ridge(alpha=alphas, fit_intercept=False), reduced, neural_data,
-            cv=CV_FOLDS, n_jobs=-1
+            cv=cv, n_jobs=-1
         )
         reduced_R2 = r2_score(neural_data, reduced_preds)
         dR2[j] = float(full_R2 - reduced_R2)
@@ -240,18 +301,22 @@ def contributions_channel(channel, session):
     beta_thr = np.full(len(families), np.nan)      # per family: (1-ALPHA) quantile of max|null beta|
     beta_sig = np.zeros(betas.shape, dtype=bool)   # per design column
     family_p = np.full(len(families), np.nan)      # per family: max-stat permutation p-value
+    real_max = np.full(len(families), np.nan)      # per family: max|real beta| (the real max-statistic)
+    fam_maxnull = np.zeros((len(families), N_PERM)) if N_PERM > 0 else np.zeros((len(families), 0))
+    perm_shifts = np.zeros(0)
     if N_PERM > 0:
         frame_rate = int(meta['frame_rate']) if 'frame_rate' in meta.files else 100
-        rng = np.random.default_rng(PERM_SEED)
         n_rows = design_norm.shape[0]
         min_shift = min(max(int(PERM_MIN_SHIFT_S * frame_rate), 1), max(1, n_rows // 4))
+        # deterministic shift schedule -> IDENTICAL across all channels of this array (same seed + same
+        # row layout), so permutation p is the same shuffle everywhere and the array-level test can
+        # pool the per-channel nulls by permutation index (see build_shift_schedule).
+        roll, perm_shifts = build_shift_schedule(n_rows, session_id, min_shift, N_PERM, PERM_SEED)
         perm_mdl = Ridge(alpha=alphas, fit_intercept=False)
-        fam_maxnull = np.zeros((len(families), N_PERM))
         print(f"{designMatID}: running {N_PERM} circular-shift permutations "
-              f"(min shift {min_shift} frames) ...")
+              f"(min shift {min_shift} frames, seed {PERM_SEED}) ...")
         for p in range(N_PERM):
-            shift = int(rng.integers(min_shift, n_rows - min_shift))
-            perm_mdl.fit(design_norm, np.roll(neural_data, shift, axis=0))
+            perm_mdl.fit(design_norm, roll(neural_data, p))
             b_null = np.asarray(perm_mdl.coef_).ravel()
             for j, (_lab, _gid, cols_g) in enumerate(families):
                 fam_maxnull[j, p] = np.max(np.abs(b_null[cols_g])) if cols_g.any() else 0.0
@@ -259,8 +324,8 @@ def contributions_channel(channel, session):
             thr = float(np.percentile(fam_maxnull[j], 100 * (1 - ALPHA)))
             beta_thr[j] = thr
             beta_sig[cols_g] = np.abs(betas[cols_g]) > thr
-            real_max = float(np.max(np.abs(betas[cols_g]))) if cols_g.any() else 0.0
-            family_p[j] = float(np.mean(fam_maxnull[j] >= real_max))
+            real_max[j] = float(np.max(np.abs(betas[cols_g]))) if cols_g.any() else 0.0
+            family_p[j] = float(np.mean(fam_maxnull[j] >= real_max[j]))
             print(f"{designMatID}:   {lab:<24} thr={thr:.4g}  "
                   f"{int(beta_sig[cols_g].sum())}/{int(cols_g.sum())} lags sig  p={family_p[j]:.3g}")
 
@@ -280,6 +345,11 @@ def contributions_channel(channel, session):
         beta_sig=beta_sig,
         beta_thr=beta_thr,
         family_p=family_p,
+        real_max=real_max,          # per family: max|real beta| (the real max-statistic)
+        fam_maxnull=fam_maxnull,    # per family x permutation: max|null beta| (the shared-shift null
+                                    # distribution) -- pooled ACROSS channels by permutation index for
+                                    # the array-level test in PlotArraySummary.py
+        perm_shifts=perm_shifts,    # the shift schedule (identical across an array's channels)
         n_perm=N_PERM,
         alpha_sig=ALPHA,
     )
