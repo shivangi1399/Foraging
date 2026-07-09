@@ -183,7 +183,7 @@ warping env and acme fans the channels out to SLURM workers itself — one worke
 `FittingGLM.py` (step 4) is the heavy one: the design is huge and gets densified, so each worker
 needs a **big-memory, multi-core** node. The plotting scripts are light and run on the login node.
 
-## Support modules (not run directly)
+## Support modules (code/functions)
 
 - `reg.py`   – `makeDesignMatrix_noTrials` (event → time-lagged kernel) and `ridge_MML` (ridge penalty).
 - `utils.py` – `makeLogical` (event times → boolean vector).
