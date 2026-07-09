@@ -89,6 +89,12 @@ N_PERM = 1000
 ALPHA = 0.05
 PERM_MIN_SHIFT_S = 10.0    # min circular shift (s); must exceed the longest kernel window
 PERM_SEED = 0
+# Save the FULL per-column (per-lag) null betas, not just the per-family max. Needed so the POOLED
+# mean-kernel test (AnalyzePooledKernels.py, step 6c) can pool per-lag nulls across channels by the
+# shared shift index. Costs an extra (n_columns x N_PERM) float32 array per channel on disk (a few
+# MB); set False to keep only the max-stat fam_maxnull (array-level test still works, but the pooled
+# per-lag kernel test does not).
+SAVE_COL_NULL = True
 
 # SLURM / acme parallelisation: one worker per channel. The design stays sparse (no dense alpha
 # search), so this is lighter than step 4, but it runs N_families+1 ridge CV fits per channel
@@ -303,6 +309,10 @@ def contributions_channel(channel, session):
     family_p = np.full(len(families), np.nan)      # per family: max-stat permutation p-value
     real_max = np.full(len(families), np.nan)      # per family: max|real beta| (the real max-statistic)
     fam_maxnull = np.zeros((len(families), N_PERM)) if N_PERM > 0 else np.zeros((len(families), 0))
+    # full per-column (per-lag) SIGNED null betas: (n_columns x N_PERM). Kept (when SAVE_COL_NULL)
+    # so the pooled mean-kernel test can average per-lag nulls across channels by shift index.
+    col_null = (np.zeros((betas.shape[0], N_PERM), dtype=np.float32)
+                if (N_PERM > 0 and SAVE_COL_NULL) else np.zeros((betas.shape[0], 0), dtype=np.float32))
     perm_shifts = np.zeros(0)
     if N_PERM > 0:
         frame_rate = int(meta['frame_rate']) if 'frame_rate' in meta.files else 100
@@ -318,6 +328,8 @@ def contributions_channel(channel, session):
         for p in range(N_PERM):
             perm_mdl.fit(design_norm, roll(neural_data, p))
             b_null = np.asarray(perm_mdl.coef_).ravel()
+            if SAVE_COL_NULL:
+                col_null[:, p] = b_null.astype(np.float32)   # keep the full per-lag null for step 6c
             for j, (_lab, _gid, cols_g) in enumerate(families):
                 fam_maxnull[j, p] = np.max(np.abs(b_null[cols_g])) if cols_g.any() else 0.0
         for j, (lab, _gid, cols_g) in enumerate(families):
@@ -349,6 +361,9 @@ def contributions_channel(channel, session):
         fam_maxnull=fam_maxnull,    # per family x permutation: max|null beta| (the shared-shift null
                                     # distribution) -- pooled ACROSS channels by permutation index for
                                     # the array-level test in PlotArraySummary.py
+        col_null=col_null,          # per column (lag) x permutation: SIGNED null beta (empty if
+                                    # SAVE_COL_NULL=False) -- pooled across channels by permutation
+                                    # index for the pooled mean-kernel test in AnalyzePooledKernels.py
         perm_shifts=perm_shifts,    # the shift schedule (identical across an array's channels)
         n_perm=N_PERM,
         alpha_sig=ALPHA,

@@ -9,7 +9,9 @@ figure also carries a per-channel full-model R2 bar. A final overview figure sho
 family for every array together.
 
 dR2 colour: red = positive unique contribution (family helps prediction), blue = negative (hurts /
-below chance). The `dummy` column is the shuffled-control null -- compare every other column to it.
+below chance). Significance is the circular-shift permutation test (pval:: columns); the shuffled
+`dummy` control is excluded from these figures (it was only ever a dR2 null-floor check, and the
+permutation test -- whose null IS the shuffled target -- does not depend on it).
 
 Works for a single session OR a POOLED (multi-session) fit: the pooled run writes the same summary
 CSVs under a `pooled_<first>_<last>/_contribution_summaries/` folder, so just point SESSION at it.
@@ -42,7 +44,7 @@ for _d in (os.path.dirname(os.path.abspath(__file__)),
 from glm_config import RESULTS_DIR, PLOTS_DIR
 results_dir = RESULTS_DIR
 plots_base = PLOTS_DIR
-SESSION = '20230214'    # default; override on the command line (a real date OR a 'pooled_...' folder)
+SESSION = 'pooled_all'    # default; override on the command line (a real date OR a 'pooled_...' folder)
 if len(sys.argv) > 1:
     SESSION = sys.argv[1]
 POOLED = SESSION.startswith('pooled_')   # a concatenated multi-session fit (from AssemblePooled.py)
@@ -86,11 +88,13 @@ def sym_vlim(values):
 
 
 def family_order(df, cols):
-    """Consistent family ordering across arrays: by global mean metric (strongest first), dummy last."""
+    """Consistent family ordering across arrays: by global mean metric (strongest first). The
+    shuffled `dummy` control is dropped from every figure -- it was only a dR2 null-floor yardstick,
+    never a result, and significance comes from the circular-shift permutation test (which already
+    uses the shuffled target as its null, so it does not rely on the dummy regressor)."""
     means = df[cols].mean().sort_values(ascending=False)
     fams = [c.split('::')[1] for c in means.index]
-    if 'dummy' in fams:                       # keep dummy at the far right as the reference column
-        fams = [f for f in fams if f != 'dummy'] + ['dummy']
+    fams = [f for f in fams if f != 'dummy']   # exclude the shuffled control from all figures
     return fams
 
 
@@ -128,8 +132,6 @@ def plot_array(arr_idx, df_arr, fams, metric, vlim):
     if xs.size:
         axh.scatter(xs, ys, marker='o', s=6, color='k', edgecolors='white',
                     linewidths=0.3, zorder=3)
-    if 'dummy' in fams:                       # mark the null-control column
-        axh.axvline(len(fams) - 1.5, color='k', lw=1.0)
     fig.colorbar(im, ax=axh, fraction=0.025, pad=0.02, label=metric)
 
     # per-channel full-model R2 bar, aligned to the heatmap rows
@@ -218,8 +220,6 @@ def plot_overview(df, fams, metric, arr_sig=None):
         if xs:
             ax.scatter(xs, ys, marker='o', s=10, color='k', edgecolors='white',
                        linewidths=0.4, zorder=3)
-    if 'dummy' in fams:
-        ax.axvline(len(fams) - 1.5, color='k', lw=1.0)
     fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label=f'mean {metric}')
     fig.tight_layout()
     out = os.path.join(plots_dir, f'overview_mean_{metric}_by_array.pdf')

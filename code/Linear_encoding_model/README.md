@@ -36,12 +36,17 @@ For every electrode and every regressor "family" (e.g. `grass_in_RF`, `stim_onse
   the brain signal 1000× (circular time-shift) to build a "by chance" baseline, and a family counts
   as significant if its real effect beats that baseline. A family can be **significant but tiny**
   (real, reliable, but explains almost nothing unique) — always read dR2 and significance together.
-- **dummy** — a deliberately meaningless control regressor. It's the baseline: anything real should
-  clearly beat the `dummy` column.
+- **dummy** — a deliberately meaningless (time-shuffled) control regressor. It was originally a dR2
+  *floor*: a real family should beat it. It is **not shown in the figures** any more — significance
+  comes from the permutation test (whose "by chance" baseline is already the shuffled signal), so
+  the dummy is redundant as a significance tool. Run through that same test it doubles as a
+  **calibration check**: a genuine-null regressor should be flagged at about the α rate (~5% of
+  channels), which confirms the test is well-behaved.
 
 In the array-level overview plot, each cell is the **mean dR2 across the array's channels**, and a
 **dot** marks families that pass a proper **array-level permutation test** (significant across the
-whole array, not just one channel).
+whole array, not just one channel). A separate figure (`PlotPooledKernels.py`) shows each family's
+**mean kernel** — the fitted response shape averaged across the pooled channels.
 
 ---
 
@@ -52,6 +57,12 @@ Everything runs in the **warping** conda env
 `ArrayRun.py` is the one command that runs the whole pipeline. You set a few options at the top of
 the file, then run it. It walks the electrodes one array at a time and submits each step to the
 cluster.
+
+### Run the whole chain in one go — `glm_config.py`
+
+`glm_config.py` doubles as a **runner**: running it executes, one after another,
+`ArrayRun.py` (fit + stats) → `PlotArraySummary.py` (heatmaps) → `PlotPooledKernels.py` (mean
+kernels). Each runs as its own process in the same env, and the run stops if a step fails.
 
 ### Option A — each session on its own (individual runs)
 
@@ -91,8 +102,10 @@ between sessions.
    `pooled_20230203_20230214` or whatever else you choose.
 3. Plot the pooled result — just pass that folder name:
    ```
-   python PlotArraySummary.py pooled_20230203_20230214
+   python PlotArraySummary.py pooled_20230203_20230214     # dR2 / significance heatmaps
+   python PlotPooledKernels.py pooled_20230203_20230214    # mean kernel per family
    ```
+   (or run all three — fit, heatmaps, kernels — in one go with `python glm_config.py`.)
 
 > Tip: on a fresh run, keep the full pipeline in `STEPS`. If some sessions are already built, you can
 > trim `STEPS` (e.g. only build the missing sessions' inputs) to avoid recomputing them.
@@ -106,8 +119,9 @@ The pooled fit reuses the same file layout, so most analysis scripts "just work"
 |---|---|---|
 | `FittingGLM.py`, `RegressorContributions.py` (fit + stats) | ✅ | ✅ (run automatically by `ArrayRun`) |
 | `ExamineFit.py` (observed vs predicted) | ✅ | ✅ |
-| `AnalyzeRegressorContributions.py` (kernel / trace plots) | ✅ | ✅ |
+| `AnalyzeRegressorContributions.py` (per-channel kernel / trace plots) | ✅ | ✅ |
 | `PlotArraySummary.py` (array overview) | ✅ | ✅ |
+| `PlotPooledKernels.py` (mean kernel per family across channels, + pooled perm test) | ✅ | ✅ (designed for pooled) |
 | `RedundancySubsample.py` + `AnalyzeRedundancySubsample.py` (redundancy check) | ✅ | ❌ **individual sessions only** |
 
 The redundancy scripts need the *raw* design matrix, which the pooled build doesn't save — so run
@@ -134,6 +148,8 @@ Plotting / inspection (light — no cluster needed):
 - `GLM_fitting/ExamineFit.py` → observed-vs-predicted trace PDF
 - `GLM_fitting/AnalyzeRegressorContributions.py` → per-channel kernel / trace / summary PDFs
 - `PlotArraySummary.py` → per-array heatmaps + the array-level overview
+- `PlotPooledKernels.py` → one **mean kernel per family** across the pooled channels (±SEM, faint
+  per-channel traces), with the pooled per-lag permutation test shading significant lags
 
 Redundancy check (individual sessions only, optional but recommended before trusting a fit):
 
@@ -150,9 +166,15 @@ flat here yet show up in a simpler marginal average. The shuffles use a **fixed 
 of an array gets the same shuffles**, which lets `PlotArraySummary.py` build the honest array-level
 test by pooling the per-channel null distributions. Set `N_PERM=0` to skip.
 
+Because the shuffles are shared across channels, `PlotPooledKernels.py` uses the same trick on the
+**mean kernel**: with `SAVE_COL_NULL=True` (step 5) the full per-lag null is kept, and per family we
+average the per-lag null across channels *by shuffle index* to get a "by chance" band for the mean
+kernel — then a max-statistic across lags marks which lags of the mean kernel beat chance. (The
+dummy control, run through this same machinery)
+
 ---
 
-## How the steps reach the cluster (ACME)
+## How the steps reach the cluster (ACME - https://esi-acme.readthedocs.io/en/latest/)
 
 The heavy steps (1, 2, 3, assemble, 4, 5) use **ACME**: you run the script (or `ArrayRun.py`) in the
 warping env and acme fans the channels out to SLURM workers itself — one worker per channel. Tune
