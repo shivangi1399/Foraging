@@ -83,7 +83,7 @@ if len(sys.argv) > 1:
 
 PERM_TEST = True            # pool per-lag nulls across channels -> significance of the MEAN kernel
 ONLY_SIG = False            # True -> average each family only over channels with family_p < ALPHA
-NORMALISE = False           # True -> peak-normalise each channel's kernel (+ its null) before averaging
+NORMALISE = True           # True -> peak-normalise each channel's kernel (+ its null) before averaging
 ALPHA = 0.05               # significance level for the circular-shift permutation test (family_p)
 SHOW_INDIVIDUAL = True      # draw the per-channel kernels faintly behind the mean
 
@@ -233,6 +233,8 @@ def main():
 
     # ---- plot ----
     labels = [lab for lab in label_order if include.get(lab)]
+    # drop the last 8 regressors from the plot (comment out to plot all families again):
+    labels = labels[:-8]
     n = len(labels)
     ncol = 4
     nrow = int(np.ceil(n / ncol))
@@ -279,7 +281,7 @@ def main():
 
         if SHOW_INDIVIDUAL:
             for row in stack:
-                ax.plot(x, row, color='grey', lw=0.4, alpha=0.25, zorder=1)
+                ax.plot(x, row, color='lightgrey', lw=0.3, alpha=0.08, zorder=1)
         ax.fill_between(x, mean - sem, mean + sem, color='tab:blue', alpha=0.3, zorder=2)
         ax.plot(x, mean, color='tab:blue', lw=1.8, zorder=3)
         ax.axhline(0, color='grey', lw=0.6)
@@ -297,7 +299,7 @@ def main():
 
     out_dir = Path(plots_dir) / SESSION / '_contribution_summaries'
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = ('_sig' if only_sig else '') + ('_permtest' if do_perm else '')
+    suffix = ('_sig' if only_sig else '') + ('_permtest' if do_perm else '') + ('_norm' if NORMALISE else '')
     out = out_dir / f'{SESSION}_mean_kernels{suffix}.pdf'
     fig.savefig(out)
     plt.close(fig)
