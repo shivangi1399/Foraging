@@ -21,7 +21,6 @@ You can run this **two ways**: each session on its own, or **all sessions pooled
 fit per electrode. See "How to run it" below.
 
 ---
-
 ## What you get out of it
 
 For every electrode and every regressor "family" (e.g. `grass_in_RF`, `stim_onset`, `state`):
@@ -49,7 +48,6 @@ whole array, not just one channel). A separate figure (`PlotPooledKernels.py`) s
 **mean kernel** — the fitted response shape averaged across the pooled channels.
 
 ---
-
 ## How to run it
 
 Everything runs in the **warping** conda env
@@ -129,7 +127,6 @@ the redundancy check on individual sessions, not the pooled fit. We already remo
 regressors we could afford to loose, the left over once are essential even if they are redundant.
 
 ---
-
 ## Under the hood: the full step list
 
 `ArrayRun.py` runs these in order (each reads the previous step's output). Steps 1–3 run per real
@@ -173,7 +170,6 @@ kernel — then a max-statistic across lags marks which lags of the mean kernel 
 dummy control, run through this same machinery)
 
 ---
-
 ## How the steps reach the cluster (ACME - https://esi-acme.readthedocs.io/en/latest/)
 
 The heavy steps (1, 2, 3, assemble, 4, 5) use **ACME**: you run the script (or `ArrayRun.py`) in the
