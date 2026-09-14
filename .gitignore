@@ -22,6 +22,7 @@ Datasets/
 Results/
 plots/
 Train_Rec_Info/
+writing/
 
 # Excluded code subfolders
 code/conferences/
