@@ -8,15 +8,21 @@ transition becomes an event with t = 0 at the entry sample. LFP is sliced
 entry type, and compared with the same max/min permutation thresholding as
 erp_spectra_stats.py.
 
+RF data include the reset button (apple, outline C). RF states:
+    0 background, 1 target_in, 2 distractor_in, 3 reset_in
+Precedence when outlines overlap: target > distractor > reset.
+
 Entry types (prev_state -> new_state):
     (0, 1)  target_from_background
     (2, 1)  target_from_distractor
     (0, 2)  distractor_from_background
     (1, 2)  distractor_from_target
+    (0, 3)  reset_from_background
+Transitions between the reset button and a leaf are not counted as entries.
 
 Also reports:
-- Dwell-time histogram per RF state (target / distractor / neither) computed
-  across all (trial, channel) runs.
+- Dwell-time histogram per RF state (target / distractor / reset / neither)
+  computed across all (trial, channel) runs.
 
 State derivation matches RF_In_Out/RF_inout_channel_raster.py.
 """
@@ -41,7 +47,7 @@ from parse_logfile import TextLog  # noqa: E402
 # -----------------------------
 lfp_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_data/stimAalign_cut/clean_full_length'
 eye_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/eye_data'
-rf_stim_dir  = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/RF_VR_mapping_no_reset/RFarea_stim'
+rf_stim_dir  = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi/Results/RF_VR_mapping/RFarea_stim'   # with reset button (outline C)
 
 sessions = ['20230203', '20230208', '20230209', '20230213', '20230214']
 
@@ -60,7 +66,7 @@ PRE          = 0.1     # s, pre-entry window
 POST         = 0.05     # s, post-entry window
 MIN_DWELL_S  = 0.05    # 50 ms — new state must hold this long after entry
 
-output_dir       = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/RF VR mapping_no_reset/RF_In_Out/entry_locked_{int(PRE*1000)}_{int(POST*1000)}'
+output_dir       = f'/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/RF VR mapping/RF_In_Out/entry_locked_{int(PRE*1000)}_{int(POST*1000)}'
 results_data_dir = os.path.join(output_dir, 'data')
 os.makedirs(output_dir, exist_ok=True)
 os.makedirs(results_data_dir, exist_ok=True)
@@ -72,8 +78,12 @@ ENTRY_TYPES = {
     (2, 1): 'target_from_distractor',
     (0, 2): 'distractor_from_background',
     (1, 2): 'distractor_from_target',
+    (0, 3): 'reset_from_background',
 }
-STATE_LABELS = {0: 'background', 1: 'target_in', 2: 'distractor_in'}
+STATE_LABELS = {0: 'background', 1: 'target_in', 2: 'distractor_in', 3: 'reset_in'}
+
+# eventmarker of the object walked into -> outline letter (3063 = ExitButtonReached)
+REACH_EVT_TO_STIM = {3013: 'A', 3023: 'B', 3063: 'C'}
 
 n_perms = 1000
 alpha   = 0.05
@@ -161,7 +171,7 @@ def parse_session_log(session):
     target_stim = np.where(trial_df['Right'].values == 1, 'A', 'B')
 
     target_onset = ts[np.where(evt == 3011)[0]]
-    reach_mask   = np.isin(evt, [3013, 3023])
+    reach_mask   = np.isin(evt, list(REACH_EVT_TO_STIM))
     reach_ts_all  = ts[reach_mask]
     reach_evt_all = evt[reach_mask]
 
@@ -186,7 +196,7 @@ def trial_channel_rf_states(hf, trial_name, ch_indices, target_stim,
                             target_onset_t, reach_ts_all, reach_evt_all,
                             aligned_stim_t, lfp_time):
     """Per-channel RF state at every LFP time sample for one trial.
-    0 = neither, 1 = target_in, 2 = distractor_in. -1 means no RF data.
+    0 = neither, 1 = target_in, 2 = distractor_in, 3 = reset_in. -1 means no RF data.
     """
     n_t  = len(lfp_time)
     n_ch = len(ch_indices)
@@ -213,7 +223,7 @@ def trial_channel_rf_states(hf, trial_name, ch_indices, target_stim,
         if is_collapse and len(reach_ts_all) > 0:
             abs_tp_time = target_onset_t + aligned_stim_t[tp_i]
             nearest_idx = np.argmin(np.abs(reach_ts_all - abs_tp_time))
-            collapse_reached_stim = 'A' if reach_evt_all[nearest_idx] == 3013 else 'B'
+            collapse_reached_stim = REACH_EVT_TO_STIM.get(int(reach_evt_all[nearest_idx]))
 
         # Build ch_idx → group-name map once per tp (was a full prefix scan per
         # (channel, tp), which dominated runtime).
@@ -226,16 +236,15 @@ def trial_channel_rf_states(hf, trial_name, ch_indices, target_stim,
             except (ValueError, IndexError):
                 continue
 
-        # Resolve collapse target/distractor membership once per tp
+        # Resolve the collapsed object's state once per tp: the stimulus walked
+        # into fills every RF (C = reset button)
         if is_collapse:
-            if collapse_reached_stim == 'A':
-                collapse_in_target   = (target_stim == 'A')
-                collapse_in_distract = (target_stim == 'B')
-            elif collapse_reached_stim == 'B':
-                collapse_in_target   = (target_stim == 'B')
-                collapse_in_distract = (target_stim == 'A')
+            if collapse_reached_stim == 'C':
+                collapse_state = 3
+            elif collapse_reached_stim in ('A', 'B'):
+                collapse_state = 1 if collapse_reached_stim == target_stim else 2
             else:
-                collapse_in_target = collapse_in_distract = False
+                collapse_state = 0
 
         for c_i, ch_idx in enumerate(ch_indices_int):
             pt_name = ch_to_ptname.get(ch_idx)
@@ -244,23 +253,27 @@ def trial_channel_rf_states(hf, trial_name, ch_indices, target_stim,
             pt_grp = tp_grp[pt_name]
 
             if is_collapse:
-                in_target, in_distract = collapse_in_target, collapse_in_distract
+                tp_states[c_i, tp_i] = collapse_state
+                continue
+
+            in_A = bool(pt_grp['inside_transformed_outline_A'][()])
+            in_B = bool(pt_grp['inside_transformed_outline_B'][()])
+            in_C = bool(pt_grp['inside_transformed_outline_C'][()])
+            if target_stim == 'A':
+                in_target   = in_A
+                in_distract = in_B and not in_A
+            elif target_stim == 'B':
+                in_target   = in_B
+                in_distract = in_A and not in_B
             else:
-                in_A = bool(pt_grp['inside_transformed_outline_A'][()])
-                in_B = bool(pt_grp['inside_transformed_outline_B'][()])
-                if target_stim == 'A':
-                    in_target   = in_A
-                    in_distract = in_B and not in_A
-                elif target_stim == 'B':
-                    in_target   = in_B
-                    in_distract = in_A and not in_B
-                else:
-                    in_target = in_distract = False
+                in_target = in_distract = False
 
             if in_target:
                 tp_states[c_i, tp_i] = 1
             elif in_distract:
                 tp_states[c_i, tp_i] = 2
+            elif in_C:
+                tp_states[c_i, tp_i] = 3
             else:
                 tp_states[c_i, tp_i] = 0
 
@@ -301,7 +314,7 @@ def find_runs(s):
 session_epochs = []
 n_entries_used  = {et: 0 for et in ENTRY_TYPES.values()}
 if RUN_HISTOGRAMS:
-    dwell_durations = {0: [], 1: [], 2: []}
+    dwell_durations = {st: [] for st in STATE_LABELS}
     entry_metadata = {et: {'prev_run_dur': [], 'new_run_dur': [],
                            'max_pre':      [], 'max_post':    []}
                       for et in ENTRY_TYPES.values()}
@@ -446,8 +459,8 @@ if RUN_HISTOGRAMS:
     # Dwell-time histograms (per RF state)
     # -----------------------------
     print('\n=== Dwell-time histograms (per state) ===')
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=False)
-    for ax, st in zip(axes, [1, 2, 0]):
+    fig, axes = plt.subplots(1, 4, figsize=(20, 4), sharey=False)
+    for ax, st in zip(axes, [1, 2, 3, 0]):
         durs = np.array(dwell_durations[st]) if dwell_durations[st] else np.array([])
         if durs.size:
             ax.hist(durs, bins=60, range=(0, 3.0), color='steelblue', edgecolor='k', linewidth=0.4)
@@ -471,7 +484,7 @@ if RUN_HISTOGRAMS:
         ('max_pre',      'Max pre to trial start (s)'),
         ('max_post',     'Max post to trial end (s)'),
     ]
-    fig, axes = plt.subplots(len(metrics), len(ENTRY_TYPES), figsize=(20, 14))
+    fig, axes = plt.subplots(len(metrics), len(ENTRY_TYPES), figsize=(5 * len(ENTRY_TYPES), 14))
     for col, et in enumerate(ENTRY_TYPES.values()):
         for row, (metric, label) in enumerate(metrics):
             ax = axes[row, col]
@@ -511,6 +524,7 @@ if RUN_HISTOGRAMS:
         os.path.join(results_data_dir, 'dwell_durations.npz'),
         target_in     = np.array(dwell_durations[1]),
         distractor_in = np.array(dwell_durations[2]),
+        reset_in      = np.array(dwell_durations[3]),
         background    = np.array(dwell_durations[0]),
     )
     print(f'  Histograms saved → {output_dir}')

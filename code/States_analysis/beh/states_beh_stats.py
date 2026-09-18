@@ -39,7 +39,10 @@ CORE STATISTIC (the z-score heatmaps): ASR + circular-shift permutation
     structure and per-state counts, randomizing only the phase relative to the
     behavioral labels -- the correct null. Per cell:
 
-        p = count(|ASR_perm| >= |ASR_obs|) / 10000      (two-tailed); * if p<0.05.
+        p = count(|ASR_perm| >= |ASR_obs|) / 10000      (two-tailed)
+
+    Every cell of a table is tested, so the per-cell p is then corrected across the
+    cells of that table with Benjamini-Hochberg (bh_fdr); * marks q < 0.05.
 
     asr_with_perm         -> trial-level tables (outcome, outcome x difficulty).
     asr_with_perm_records -> block-position / block-transition (shifts the full
@@ -131,6 +134,28 @@ def asr_matrix(state_arr, states, group_arrays):
             if denom > 0:
                 Z[i, j] = (O - E) / denom
     return Z
+
+
+def bh_fdr(p):
+    """Benjamini-Hochberg q-values over all cells of one table (NaN cells excluded).
+
+    Each heatmap tests every (state, category) cell at once -- 16 cells for outcome, 24 for
+    outcome x difficulty, 40 for block position and 56 for block transitions -- so an uncorrected
+    0.05 would let a handful of cells through by chance. BH controls the false discovery rate
+    across the cells of that table. Returns q with the shape of p.
+    """
+    p = np.asarray(p, float)
+    q = np.full(p.shape, np.nan)
+    flat = p[~np.isnan(p)]
+    if flat.size == 0:
+        return q
+    order = np.argsort(flat)
+    ranked = flat[order] * flat.size / np.arange(1, flat.size + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]        # enforce monotonicity
+    out = np.empty_like(ranked)
+    out[order] = np.minimum(ranked, 1.0)
+    q[~np.isnan(p)] = out
+    return q
 
 
 def _roll_within_sessions(state_flat, sess_slices, rng):
@@ -427,7 +452,8 @@ outcome_arrays = [trial_sorted[c].to_numpy().astype(bool) for c in outcome_cols]
 obs_so, p_so = asr_with_perm(state_flat, sess_slices, states, outcome_arrays, n_perms, rng)
 z_matrix = obs_so.T
 p_matrix = p_so.T
-sig_matrix = p_matrix < 0.05
+q_matrix = bh_fdr(p_matrix)                      # BH across the 16 cells of this table
+sig_matrix = q_matrix < 0.05
 
 # --- Diverging pastel light-purple to turquoise colormap ---
 purple_turquoise = LinearSegmentedColormap.from_list(
@@ -474,7 +500,7 @@ sm = plt.cm.ScalarMappable(cmap=purple_turquoise,
 sm.set_array([])
 cbar = plt.colorbar(sm, ax=ax, label='Z(w)')
 
-plt.title('State × Outcome\n(* permutation p<0.05)')
+plt.title('State × Outcome\n(* BH q<0.05)')
 plt.tight_layout()
 
 output_file = os.path.join(output_dir, 'trial_outcome_vs_states_zscores.pdf')
@@ -551,7 +577,8 @@ od_arrays = [trial_sorted_od[c].to_numpy().astype(bool) for c in outcome_diff_co
 obs_od, p_od = asr_with_perm(state_flat, sess_slices, states, od_arrays, n_perms, rng)
 z_matrix_od = obs_od.T
 p_matrix_od = p_od.T
-sig_matrix_od = p_matrix_od < 0.05
+q_matrix_od = bh_fdr(p_matrix_od)                # BH across the 24 cells of this table
+sig_matrix_od = q_matrix_od < 0.05
 
 z_abs_max_od = np.nanmax(np.abs(z_matrix_od))
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -582,7 +609,7 @@ sm = plt.cm.ScalarMappable(cmap=purple_turquoise,
                             norm=plt.Normalize(vmin=-z_abs_max_od, vmax=z_abs_max_od))
 sm.set_array([])
 cbar = plt.colorbar(sm, ax=ax, label='Z(w)')
-plt.title('State × Outcome × Difficulty\n(* permutation p<0.05)')
+plt.title('State × Outcome × Difficulty\n(* BH q<0.05)')
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'trial_outcome_difficulty_vs_states_zscores.pdf'),
             dpi=600, transparent=False, facecolor='white')
@@ -647,7 +674,8 @@ bin_arrays = [(block_pos_df['NormBin'] == j).to_numpy() for j in range(n_bins)]
 z_block_pos, p_block_pos = asr_with_perm_records(
     block_pos_df['Session'].to_numpy(), block_pos_df['T'].to_numpy(),
     bin_arrays, bp_states, state_seqs, n_perms, rng)
-sig_block_pos = p_block_pos < 0.05
+q_block_pos = bh_fdr(p_block_pos)               # BH across the 40 cells of this table
+sig_block_pos = q_block_pos < 0.05
 
 z_abs_max_bp = np.nanmax(np.abs(z_block_pos))
 if np.isnan(z_abs_max_bp) or z_abs_max_bp == 0:
@@ -683,7 +711,7 @@ sm = plt.cm.ScalarMappable(cmap=purple_turquoise,
                             norm=plt.Normalize(vmin=-z_abs_max_bp, vmax=z_abs_max_bp))
 sm.set_array([])
 cbar = plt.colorbar(sm, ax=ax, label='Z(w)')
-plt.title('State Probabilities Across Normalized Block Position\n(* permutation p<0.05)')
+plt.title('State Probabilities Across Normalized Block Position\n(* BH q<0.05)')
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'state_prob_block_position_zscore.pdf'),
             dpi=600, transparent=False, facecolor='white')
@@ -730,7 +758,8 @@ offset_arrays = [(trans_df['Offset'] == o).to_numpy() for o in offsets]
 z_trans, p_trans = asr_with_perm_records(
     trans_df['Session'].to_numpy(), trans_df['T'].to_numpy(),
     offset_arrays, tr_states, state_seqs, n_perms, rng)
-sig_trans = p_trans < 0.05
+q_trans = bh_fdr(p_trans)                       # BH across the 56 cells of this table
+sig_trans = q_trans < 0.05
 
 z_abs_max_tr = np.nanmax(np.abs(z_trans))
 if np.isnan(z_abs_max_tr) or z_abs_max_tr == 0:
@@ -771,7 +800,7 @@ sm = plt.cm.ScalarMappable(cmap=purple_turquoise,
                             norm=plt.Normalize(vmin=-z_abs_max_tr, vmax=z_abs_max_tr))
 sm.set_array([])
 cbar = plt.colorbar(sm, ax=ax, label='Z(w)')
-plt.title('State Probabilities Around Block Transitions\n(* permutation p<0.05)')
+plt.title('State Probabilities Around Block Transitions\n(* BH q<0.05)')
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'state_prob_block_transitions_zscore.pdf'),
             dpi=600, transparent=False, facecolor='white')

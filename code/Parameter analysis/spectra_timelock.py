@@ -8,7 +8,7 @@ import syncopy as spy
 # User config
 # -------------------------
 lfp_data_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/Datasets/neural_data/stimAalign_cut/clean_full_length'
-output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/timelock_spectra/200_600'
+output_dir = '/cs/projects/MWzeronoise/Analysis/4Shivangi/plots/timelock_spectra/200_900'
 sessions = ['20230202', '20230203', '20230208', '20230209', '20230213', '20230214']
 os.makedirs(output_dir, exist_ok=True)
 
@@ -94,7 +94,7 @@ for session_name in sessions:
         print(f"Trialdefinition handling error: {e}")
 
     # Select latency window
-    cfg = spy.StructDict(latency=[-0.2, 0.6])
+    cfg = spy.StructDict(latency=[-0.2, 0.9])
     try:
         data = spy.selectdata(cfg, datalfp)
     except Exception as e:

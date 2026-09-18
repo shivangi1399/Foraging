@@ -166,14 +166,31 @@ def _load_channel_nulls(channel):
     return labs, fm, np.asarray(c['real_max'], dtype=float)
 
 
+def bh_fdr(p):
+    """Benjamini-Hochberg q-values for a 1-D array of p-values."""
+    p = np.asarray(p, dtype=float)
+    n = p.size
+    order = np.argsort(p)
+    ranked = p[order] * n / np.arange(1, n + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]      # enforce monotonicity
+    q = np.empty(n)
+    q[order] = np.clip(ranked, 0.0, 1.0)
+    return q
+
+
 def array_perm_significance(df):
     """Array-level shared-shift permutation test -> {(array, family): bool}.
     For each array & family: take the MEAN across the array's channels of the real max|beta| as the
     array statistic, then build its null by taking -- for each shuffle index -- the MEAN across
     channels of the per-permutation nulls (pooled by shuffle index; valid because every channel used
-    the SAME shift, so the shuffle preserves cross-channel correlation). Significant if the real mean
-    exceeds the (1-ALPHA) percentile of that array null. Because the statistic is |beta|, that
-    percentile is already the two-sided ALPHA cutoff."""
+    the SAME shift, so the shuffle preserves cross-channel correlation). Because the statistic is
+    |beta|, counting the null means at or above the real one is already the two-sided test:
+
+        p = (1 + #{null >= real}) / (1 + n_perm)
+
+    Every family of an array is tested, so those p-values are then corrected across the families of
+    that array with Benjamini-Hochberg, and a family is called significant at q < ALPHA. Without the
+    correction, 22 families x 6 arrays would put about 7 dots on the overview by chance alone."""
     out = {}
     for a in sorted(df['array'].unique()):
         sub = df[df['array'] == a]
@@ -184,13 +201,20 @@ def array_perm_significance(df):
         if any(fm.shape[1] != nperm for _, fm, _ in loaded):
             print(f'  array {a}: channels disagree on N_PERM -- skipping array-level test')
             continue
-        common = set(loaded[0][0]).intersection(*[set(labs) for labs, _, _ in loaded[1:]])
+        common = sorted(set(loaded[0][0]).intersection(*[set(labs) for labs, _, _ in loaded[1:]]))
+        fams_a, pvals = [], []
         for fam in common:
             reals = np.array([rm[labs.index(fam)] for labs, _, rm in loaded])           # (n_chan,)
             nulls = np.vstack([fm[labs.index(fam)] for labs, fm, _ in loaded])          # (n_chan, nperm)
             real_stat = float(np.mean(reals))
             null_dist = np.mean(nulls, axis=0)                                          # (nperm,)
-            out[(a, fam)] = bool(real_stat > np.percentile(null_dist, 100 * (1 - ALPHA)))
+            fams_a.append(fam)
+            pvals.append((1 + int(np.count_nonzero(null_dist >= real_stat))) / (1 + null_dist.size))
+        qvals = bh_fdr(pvals)
+        for fam, q in zip(fams_a, qvals):
+            out[(a, fam)] = bool(q < ALPHA)
+        print(f'  array {a}: {int(np.sum(qvals < ALPHA))}/{len(fams_a)} families at BH q<{ALPHA:g} '
+              f'({int(np.sum(np.asarray(pvals) < ALPHA))} before correction)')
     return out
 
 
@@ -213,7 +237,7 @@ def plot_overview(df, fams, metric, arr_sig=None):
     im = ax.imshow(M, aspect='auto', cmap='RdBu_r', norm=TwoSlopeNorm(vmin=-vlim, vcenter=0.0, vmax=vlim))
     ax.set_xticks(range(len(fams))); ax.set_xticklabels(display_labels(fams), rotation=90, fontsize=7)
     ax.set_yticks(range(len(arrs))); ax.set_yticklabels([f'array {a}' for a in arrs])
-    ax.set_title(f'mean {metric} per family, by array  (dot = array-level perm test p<{ALPHA:g})')
+    ax.set_title(f'mean {metric} per family, by array  (dot = array-level perm test, BH q<{ALPHA:g} across families)')
     if arr_sig is not None:
         ys = [r for r, a in enumerate(arrs) for cci, fam in enumerate(fams) if arr_sig.get((a, fam))]
         xs = [cci for r, a in enumerate(arrs) for cci, fam in enumerate(fams) if arr_sig.get((a, fam))]
