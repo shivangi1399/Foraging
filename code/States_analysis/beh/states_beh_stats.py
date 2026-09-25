@@ -1,4 +1,4 @@
-"""
+ """
 States vs behavior: relate HMM behavioral states to what the animal is doing.
 
 Takes a trained 4-state HMM's per-trial labels (23 sessions) and crosses them

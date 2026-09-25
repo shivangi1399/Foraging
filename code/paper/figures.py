@@ -61,7 +61,7 @@ from matplotlib.transforms import ScaledTranslation, blended_transform_factory
 # ── Settings ──────────────────────────────────────────────────────────────────────────────
 ROOT = '/mnt/cs/projects/MWzeronoise/Analysis/4Shivangi'
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.path.join(ROOT, 'writing', 'figures')          # figure pages
+OUT_DIR = os.path.join(ROOT, 'writing', 'figures')           # figure pages
 ART_DIR = os.path.join(OUT_DIR, 'art')                       # Illustrator .ai and their PDF exports
 DATA_DIR = os.path.join(OUT_DIR, 'data')                     # exported results they draw
 sys.path.insert(0, HERE)
@@ -887,6 +887,7 @@ def fig08():
     rel = 100 * dR / S['full_R2'].astype(float)[:, None]
     nc = 6
     L, R, HG, VG = 1.45, 0.1, 0.42, 1.0
+    LET_X = L - 0.95          # panel letters sit on the same left edge as the group headers
     w = (FIG_W - L - R - (nc - 1) * HG) / nc
     h, head = 1.4, 0.7
     bar_groups = [('Visual factors', groups[0][1]), ('Non-visual factors and control', groups[1][1] + groups[2][1])]
@@ -919,7 +920,7 @@ def fig08():
         t.set_color(PAL['grey'] if fam[j] == 'dummy' else LETTER_COLOR)
     boxed(ax)
     colorbar_v(page, ax, MAP_SOFT, [sci(lo), '0', sci(hi)], f'Mean {DR2}')
-    page.letter(ax, 'a', up=0.55)
+    page.letter_at(LET_X, page.cm_of(ax)[1] + page.cm_of(ax)[3], 'a', up=0.55, left=0)
 
     # b: relative contribution by region
     rng = np.random.default_rng(2)
@@ -928,7 +929,7 @@ def fig08():
     for (gname, js), nr in zip(bar_groups, nrows):
         group_header(page, L - 0.95, FIG_W - R, y_top - 0.15, gname)
         if first:
-            page.letter_at(L, y_top + 0.35, 'b', up=0.0, left=0.2)   # same x as a (2.2 - 0.95)
+            page.letter_at(LET_X, y_top + 0.35, 'b', up=0.0, left=0)
             first = False
         y_top -= head
         for k, j in enumerate(js):
